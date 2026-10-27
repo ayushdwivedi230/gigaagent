@@ -1,0 +1,11 @@
+node_modules/
+out/
+dist/
+release/
+*.log
+# Secrets must never be committed
+.env
+.env.*
+!.env.example
+*.pem
+*.key
