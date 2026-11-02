@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { formatStartedAt, formatClock, sessionDurationMs } from '@shared/format';
 import { MODE_LABELS, SESSION_MODES } from '@shared/types';
-import type { SessionMode } from '@shared/types';
+import type { SessionMode, SourceKind } from '@shared/types';
 import { useAssistant } from './state/useAssistant';
 import { useElapsed } from './state/useElapsed';
+import { SuggestionsPanel } from './components/SuggestionsPanel';
+import { SettingsModal } from './components/SettingsModal';
 
 // window.api is injected by the Electron preload script via contextBridge.
 // Safely access it so the page doesn't crash when opened in a plain browser tab.
@@ -19,16 +21,18 @@ export default function App() {
   const elapsedMs = useElapsed(active?.startedAt ?? null);
 
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [mode, setMode] = useState<SessionMode>('mock-interview');
+  const [source, setSource] = useState<SourceKind>('microphone');
   const [title, setTitle] = useState('');
 
-  const idle        = snapshot.status === 'idle';
-  const running     = snapshot.status === 'active';
+  const idle = snapshot.status === 'idle';
+  const running = snapshot.status === 'active';
   const transitioning = snapshot.status === 'starting' || snapshot.status === 'stopping';
 
   const handleAction = () => {
     if (idle) {
-      void assistant.start(mode, title);
+      void assistant.start(mode, title, source);
       setTitle('');
     } else if (running) {
       void assistant.stop();
@@ -37,32 +41,47 @@ export default function App() {
 
   // ── Banner state ──────────────────────────────────────
   const bannerKind: BannerKind =
-    !active || snapshot.status === 'idle' ? 'idle'
-    : transitioning ? 'pending'
-    : active.source === 'microphone' ? 'recording'
-    : 'demo';
+    !active || snapshot.status === 'idle'
+      ? 'idle'
+      : transitioning
+        ? 'pending'
+        : active.source === 'microphone'
+          ? 'recording'
+          : 'demo';
 
   const bannerStatus =
-    bannerKind === 'idle'      ? 'Idle'
-    : bannerKind === 'pending' ? (snapshot.status === 'starting' ? 'Starting…' : 'Stopping…')
-    : bannerKind === 'recording' ? '● Live'
-    : '● Demo';
+    bannerKind === 'idle'
+      ? 'Idle'
+      : bannerKind === 'pending'
+        ? snapshot.status === 'starting'
+          ? 'Starting…'
+          : 'Stopping…'
+        : bannerKind === 'recording'
+          ? '● Live Mic'
+          : '● Demo Script';
 
   // ── Segments to display ───────────────────────────────
-  const segments = inSession
-    ? assistant.liveSegments
-    : (assistant.viewing?.segments ?? []);
+  const segments = inSession ? assistant.liveSegments : assistant.viewing?.segments ?? [];
   const finalCount = segments.filter((s) => s.isFinal).length;
 
   return (
     <div className="app">
-
       {/* ── Titlebar (drag region) ── */}
       <div className="titlebar">
         <span className="titlebar__dot" aria-hidden="true" />
-        <span className="titlebar__name">AI Assistant</span>
-        <span className="titlebar__badge">M1 · Demo</span>
+        <span className="titlebar__name">GigaAgent AI Copilot</span>
+        <span className="titlebar__badge">
+          {active?.source === 'microphone' ? 'Live Mic' : 'Copilot Active'}
+        </span>
         <div className="titlebar__controls">
+          <button
+            className="wbtn wbtn--settings"
+            onClick={() => setSettingsOpen(true)}
+            title="Settings & Credentials"
+            aria-label="Open settings"
+          >
+            ⚙
+          </button>
           <button
             className="wbtn"
             onClick={() => winApi?.window.minimize()}
@@ -114,6 +133,30 @@ export default function App() {
           {formatClock(elapsedMs)}
         </p>
 
+        {/* Audio source selector */}
+        <div className="source-selector" role="radiogroup" aria-label="Audio source">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={source === 'microphone'}
+            className={`source-btn${source === 'microphone' ? ' source-btn--active' : ''}`}
+            disabled={!idle}
+            onClick={() => setSource('microphone')}
+          >
+            🎙 Live Microphone
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={source === 'demo'}
+            className={`source-btn${source === 'demo' ? ' source-btn--active' : ''}`}
+            disabled={!idle}
+            onClick={() => setSource('demo')}
+          >
+            📝 Demo Script
+          </button>
+        </div>
+
         {/* Mode selector */}
         <div className="modes" role="radiogroup" aria-label="Session type">
           {SESSION_MODES.map((m) => (
@@ -141,7 +184,9 @@ export default function App() {
             maxLength={80}
             aria-label="Session name (optional)"
             onChange={(e) => setTitle(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && idle) handleAction(); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && idle) handleAction();
+            }}
           />
         </div>
 
@@ -166,12 +211,17 @@ export default function App() {
                 <path d="M2 1.5v8l7-4z" />
               </svg>
               {transitioning
-                ? snapshot.status === 'starting' ? 'Starting…' : 'Stopping…'
+                ? snapshot.status === 'starting'
+                  ? 'Starting…'
+                  : 'Stopping…'
                 : 'Start Session'}
             </>
           )}
         </button>
       </div>
+
+      {/* ── AI Copilot Suggestions ── */}
+      <SuggestionsPanel suggestions={assistant.suggestions} />
 
       {/* ── Transcript ── */}
       <div className="transcript-area">
@@ -191,8 +241,10 @@ export default function App() {
             </div>
             <p>
               {inSession
-                ? 'Listening… first words will appear here.'
-                : 'Press Start Session to begin capturing a live transcript.'}
+                ? source === 'microphone'
+                  ? 'Listening to microphone… speak to see live transcription.'
+                  : 'Playing demo interview script…'
+                : 'Press Start Session to begin capturing live audio & transcript.'}
             </p>
           </div>
         ) : (
@@ -204,10 +256,7 @@ export default function App() {
             aria-label="Live transcript"
           >
             {segments.map((seg) => (
-              <li
-                key={seg.id}
-                className={seg.isFinal ? 'line' : 'line line--partial'}
-              >
+              <li key={seg.id} className={seg.isFinal ? 'line' : 'line line--partial'}>
                 <time dateTime={`PT${Math.floor(seg.startMs / 1000)}S`}>
                   {formatClock(seg.startMs)}
                 </time>
@@ -261,6 +310,10 @@ export default function App() {
                     <div className="session-info">
                       <div className="session-title">{session.title}</div>
                       <div className="session-meta">
+                        <span className="session-source-badge">
+                          {session.source === 'microphone' ? 'Mic' : 'Demo'}
+                        </span>
+                        {' · '}
                         {formatStartedAt(session.startedAt)}
                         {dur !== null ? ` · ${formatClock(dur)}` : ' · In progress'}
                         {' · '}
@@ -285,6 +338,14 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {/* ── Settings Modal ── */}
+      <SettingsModal
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        settings={assistant.settings}
+        onSave={assistant.saveSettings}
+      />
     </div>
   );
 }

@@ -1,5 +1,5 @@
-import { err, ok, SESSION_MODES } from './types';
-import type { Result, SessionMode, StartSessionRequest } from './types';
+import { err, ok, SESSION_MODES, SOURCE_KINDS } from './types';
+import type { Result, SessionMode, SourceKind, StartSessionRequest } from './types';
 
 export const MAX_TITLE_LENGTH = 120;
 const ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
@@ -9,9 +9,12 @@ export function parseStartRequest(input: unknown): Result<StartSessionRequest> {
   if (typeof input !== 'object' || input === null) {
     return err('INVALID_REQUEST', 'The start request was malformed.');
   }
-  const { mode, title } = input as Record<string, unknown>;
+  const { mode, title, source } = input as Record<string, unknown>;
   if (typeof mode !== 'string' || !(SESSION_MODES as readonly string[]).includes(mode)) {
     return err('INVALID_REQUEST', 'Choose a session type: mock interview, meeting, or study session.');
+  }
+  if (source !== undefined && (typeof source !== 'string' || !(SOURCE_KINDS as readonly string[]).includes(source))) {
+    return err('INVALID_REQUEST', 'Invalid audio source selected.');
   }
   let cleanTitle: string | undefined;
   if (title !== undefined) {
@@ -22,7 +25,10 @@ export function parseStartRequest(input: unknown): Result<StartSessionRequest> {
     }
     cleanTitle = collapsed || undefined;
   }
-  return ok({ mode: mode as SessionMode, title: cleanTitle });
+  const result: StartSessionRequest = { mode: mode as SessionMode };
+  if (cleanTitle !== undefined) result.title = cleanTitle;
+  if (source !== undefined) result.source = source as SourceKind;
+  return ok(result);
 }
 
 export function parseSessionId(input: unknown): Result<string> {

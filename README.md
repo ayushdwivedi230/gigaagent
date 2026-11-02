@@ -13,16 +13,24 @@ A Windows desktop app (Electron + React + TypeScript) for **mock interviews, mee
 
 | # | Milestone | State |
 |---|-----------|-------|
-| 1 | Working desktop UI (start/stop, live transcript view, history, deletion) | **Done**. Uses a scripted *demo* transcript source, no audio |
-| 2 | Microphone permission, capture, streaming transcription | Next |
-| 3 | Gemini summaries and context-aware suggestions, API usage tracking | Planned |
+| 1 | Working desktop UI (start/stop, live transcript view, history, deletion) | **Done**. Scripted demo source & history |
+| 2 | Microphone permission, capture, streaming transcription | **Done**. WebAudio AudioWorklet 16kHz PCM capture + Deepgram WebSocket streaming & voice activity detection |
+| 3 | Gemini summaries and context-aware suggestions, API usage tracking | **Done**. Real-time Gemini 1.5 Flash Copilot suggestions (STAR frameworks, action items, key points) |
 | 4 | Document retrieval, screenshot analysis (OpenCV + vision model) | Planned |
-| 5 | SQLite history, security review, electron-builder Windows installer | Planned |
+| 5 | SQLite history, security review, electron-builder Windows installer | In progress |
 
 ## Requirements
 
 - Windows 10/11 (development also works on macOS/Linux; packaging targets Windows)
 - Node.js 22 LTS or newer, npm 10+
+
+## Features
+
+- **Real-Time Microphone Audio Capture**: Captured in sandboxed renderer via `AudioContext` and processed in an `AudioWorkletProcessor` on Chromium's real-time audio thread into 16kHz 16-bit PCM chunks.
+- **Deepgram Live Streaming STT**: Low-latency WebSocket streaming (`nova-2` / `nova-3`) with interim and final transcript segmentation.
+- **Context-Aware Gemini Suggestions**: Gemini 1.5 Flash generates actionable interview tips, STAR framework suggestions, and meeting action items debounced in real time.
+- **Encrypted Credential Storage**: API credentials (`DEEPGRAM_API_KEY`, `GEMINI_API_KEY`) encrypted at rest via Windows DPAPI / Electron `safeStorage`.
+- **Local Fallback Mode**: Energy-based voice detection and heuristic guidance when testing offline without API keys.
 
 ## Install and run
 

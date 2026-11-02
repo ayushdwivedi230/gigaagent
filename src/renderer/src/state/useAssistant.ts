@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
 import { applySegment } from '@shared/transcript';
 import type {
+  AppSettings,
   Result,
   SessionDetail,
   SessionMode,
   SessionSnapshot,
   SessionSummary,
+  SourceKind,
+  SuggestionItem,
   TranscriptSegment,
 } from '@shared/types';
+import { audioCapture } from '../audio/audioCaptureService';
 
 const IDLE: SessionSnapshot = { status: 'idle', activeSession: null };
 const UNREACHABLE = 'The app service did not respond. Close and reopen the app.';
@@ -19,23 +23,29 @@ export interface AssistantState {
   snapshot: SessionSnapshot;
   history: SessionSummary[];
   liveSegments: TranscriptSegment[];
+  suggestions: SuggestionItem[];
   viewing: SessionDetail | null;
   error: string | null;
-  start: (mode: SessionMode, title: string) => Promise<void>;
+  settings: AppSettings | null;
+  start: (mode: SessionMode, title: string, source?: SourceKind) => Promise<void>;
   stop: () => Promise<void>;
   view: (id: string) => Promise<void>;
   closeView: () => void;
   remove: (id: string) => Promise<void>;
   clearAll: () => Promise<void>;
   dismissError: () => void;
+  loadSettings: () => Promise<void>;
+  saveSettings: (updates: Partial<AppSettings>) => Promise<void>;
 }
 
 export function useAssistant(): AssistantState {
   const [snapshot, setSnapshot] = useState<SessionSnapshot>(IDLE);
   const [history, setHistory] = useState<SessionSummary[]>([]);
   const [liveSegments, setLiveSegments] = useState<TranscriptSegment[]>([]);
+  const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [viewing, setViewing] = useState<SessionDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
 
   /** Unwraps an IPC Result; surfaces failures as a user-facing message. */
   const call = useCallback(async <T,>(request: Promise<Result<T>>): Promise<T | undefined> => {
@@ -55,6 +65,21 @@ export function useAssistant(): AssistantState {
     if (list) setHistory(list);
   }, [call]);
 
+  const loadSettings = useCallback(async () => {
+    if (!api) return;
+    const s = await call(api.settings.get());
+    if (s) setSettings(s);
+  }, [call]);
+
+  const saveSettings = useCallback(
+    async (updates: Partial<AppSettings>) => {
+      if (!api) return;
+      const updated = await call(api.settings.save(updates));
+      if (updated) setSettings(updated);
+    },
+    [call],
+  );
+
   useEffect(() => {
     if (!api) return;
     let disposed = false;
@@ -63,21 +88,28 @@ export function useAssistant(): AssistantState {
       if (current && !disposed) setSnapshot(current);
     })();
     void refreshHistory();
+    void loadSettings();
 
     const unsubscribe = api.onEvent((event) => {
       switch (event.type) {
         case 'status':
           setSnapshot(event.snapshot);
           if (event.snapshot.status === 'starting') {
-            // Reset here (not after the start call resolves) so early segments are never lost.
             setLiveSegments([]);
+            setSuggestions([]);
             setViewing(null);
+          } else if (event.snapshot.status === 'idle') {
+            audioCapture.stop();
+            void refreshHistory();
           } else {
             void refreshHistory();
           }
           break;
         case 'segment':
           setLiveSegments((prev) => applySegment(prev, event.segment));
+          break;
+        case 'suggestion':
+          setSuggestions((prev) => [event.suggestion, ...prev]);
           break;
         case 'error':
           setError(event.error.message);
@@ -86,9 +118,10 @@ export function useAssistant(): AssistantState {
     });
     return () => {
       disposed = true;
+      audioCapture.stop();
       unsubscribe();
     };
-  }, [call, refreshHistory]);
+  }, [call, refreshHistory, loadSettings]);
 
   const view = useCallback(
     async (id: string) => {
@@ -100,15 +133,40 @@ export function useAssistant(): AssistantState {
   );
 
   const start = useCallback(
-    async (mode: SessionMode, title: string) => {
+    async (mode: SessionMode, title: string, source: SourceKind = 'microphone') => {
       if (!api) return;
       setError(null);
-      await call(api.session.start({ mode, title }));
+
+      if (source === 'microphone') {
+        try {
+          await audioCapture.start({
+            onChunk: (buffer) => {
+              api.audio.sendChunk(buffer);
+            },
+            onError: (err) => {
+              setError(err.message);
+            },
+          });
+        } catch (captureErr) {
+          setError(
+            captureErr instanceof Error
+              ? captureErr.message
+              : 'Failed to access microphone. Check permissions.',
+          );
+          return;
+        }
+      }
+
+      const res = await call(api.session.start({ mode, title, source }));
+      if (!res) {
+        audioCapture.stop();
+      }
     },
     [call],
   );
 
   const stop = useCallback(async () => {
+    audioCapture.stop();
     if (!api) return;
     const finished = await call(api.session.stop());
     if (finished) await view(finished.id);
@@ -137,8 +195,10 @@ export function useAssistant(): AssistantState {
     snapshot,
     history,
     liveSegments,
+    suggestions,
     viewing,
     error,
+    settings,
     start,
     stop,
     view,
@@ -146,5 +206,7 @@ export function useAssistant(): AssistantState {
     remove,
     clearAll,
     dismissError: () => setError(null),
+    loadSettings,
+    saveSettings,
   };
 }

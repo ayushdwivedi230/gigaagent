@@ -9,6 +9,7 @@ import type {
   SessionSnapshot,
   SessionStatus,
   SessionSummary,
+  SourceKind,
   StartSessionRequest,
 } from '@shared/types';
 import type { SessionRepository } from './sessionRepository';
@@ -16,7 +17,7 @@ import type { TranscriptSource } from './transcriptSource';
 
 export interface SessionServiceDeps {
   repository: SessionRepository;
-  createSource: (mode: SessionMode) => TranscriptSource;
+  createSource: (mode: SessionMode, sourceKind?: SourceKind) => TranscriptSource;
   now?: () => Date;
   newId?: () => string;
 }
@@ -38,7 +39,7 @@ export class SessionService {
   private active: ActiveSession | null = null;
   private readonly listeners = new Set<Listener>();
   private readonly repository: SessionRepository;
-  private readonly createSource: (mode: SessionMode) => TranscriptSource;
+  private readonly createSource: (mode: SessionMode, sourceKind?: SourceKind) => TranscriptSource;
   private readonly now: () => Date;
   private readonly newId: () => string;
 
@@ -75,7 +76,7 @@ export class SessionService {
       return err('BUSY', 'A session is already running. Stop it before starting another.');
     }
 
-    const source = this.createSource(request.mode);
+    const source = this.createSource(request.mode, request.source);
     const summary: SessionSummary = {
       id: this.newId(),
       title: request.title ?? MODE_LABELS[request.mode],
@@ -155,6 +156,14 @@ export class SessionService {
       return err('SESSION_ACTIVE', 'Stop the current session before deleting history.');
     }
     return ok({ deleted: this.repository.clear() });
+  }
+
+  getActiveSource(): TranscriptSource | null {
+    return this.active?.source ?? null;
+  }
+
+  emitEvent(event: SessionEvent): void {
+    this.emit(event);
   }
 
   private handleSegment(active: ActiveSession, raw: RawSegment): void {

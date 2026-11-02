@@ -17,6 +17,15 @@ const api: MeetingAssistantApi = {
     delete: (id) => ipcRenderer.invoke(IPC.historyDelete, id),
     clear: () => ipcRenderer.invoke(IPC.historyClear),
   },
+  settings: {
+    get: () => ipcRenderer.invoke(IPC.settingsGet),
+    save: (settings) => ipcRenderer.invoke(IPC.settingsSave, settings),
+  },
+  audio: {
+    sendChunk: (buffer) => {
+      ipcRenderer.send(IPC.audioChunk, buffer);
+    },
+  },
   window: {
     minimize: () => { void ipcRenderer.invoke(IPC.windowMinimize); },
     close: () => { void ipcRenderer.invoke(IPC.windowClose); },

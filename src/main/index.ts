@@ -1,19 +1,56 @@
-import { app, session as electronSession } from 'electron';
+import path from 'node:path';
+import { app, safeStorage, session as electronSession } from 'electron';
 import type { BrowserWindow } from 'electron';
 import { registerIpc } from './ipc';
 import { APP_NAME, createMainWindow } from './window';
 import { DemoTranscriptSource } from './services/demoTranscriptSource';
+import { MicrophoneTranscriptSource } from './services/microphoneTranscriptSource';
 import { InMemorySessionRepository } from './services/sessionRepository';
 import { SessionService } from './services/sessionService';
+import { SettingsService } from './services/settingsService';
+import { SuggestionService } from './services/suggestionService';
 import type { SessionSnapshot } from '@shared/types';
 
-const service = new SessionService({
-  repository: new InMemorySessionRepository(),
-  // Milestone 2 replaces this with a microphone-backed source.
-  createSource: () => new DemoTranscriptSource(),
-});
-
 let mainWindow: BrowserWindow | null = null;
+let settingsService: SettingsService;
+let service: SessionService;
+let suggestionService: SuggestionService;
+
+function initServices(): void {
+  const settingsPath = path.join(app.getPath('userData'), 'settings.json');
+  settingsService = new SettingsService(settingsPath, safeStorage);
+
+  service = new SessionService({
+    repository: new InMemorySessionRepository(),
+    createSource: (_mode, sourceKind) => {
+      if (sourceKind === 'microphone') {
+        return new MicrophoneTranscriptSource({ settingsService });
+      }
+      return new DemoTranscriptSource();
+    },
+  });
+
+  suggestionService = new SuggestionService({
+    settingsService,
+    onSuggestion: (suggestion) => {
+      service.emitEvent({ type: 'suggestion', suggestion });
+    },
+  });
+
+  service.subscribe((event) => {
+    if (event.type === 'status') {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setTitle(titleFor(event.snapshot));
+      }
+      suggestionService.setSession(
+        event.snapshot.activeSession?.id ?? null,
+        event.snapshot.activeSession?.mode ?? 'mock-interview',
+      );
+    } else if (event.type === 'segment') {
+      suggestionService.handleSegment(event.segment);
+    }
+  });
+}
 
 /** The window title doubles as a taskbar-visible recording indicator. */
 function titleFor(snapshot: SessionSnapshot): string {
@@ -26,11 +63,34 @@ function titleFor(snapshot: SessionSnapshot): string {
   return `${snapshot.status === 'starting' ? 'Starting' : 'Stopping'}… — ${APP_NAME}`;
 }
 
-/** Deny every permission by default. Milestone 2 will allow microphone access for our own window only. */
-function lockDownPermissions(): void {
+/** Deny permissions by default, but permit audio-only microphone access for our authenticated window. */
+function configurePermissions(win: BrowserWindow): void {
   const ses = electronSession.defaultSession;
-  ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
-  ses.setPermissionCheckHandler(() => false);
+  ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    if (webContents !== win.webContents) {
+      return callback(false);
+    }
+    const mediaTypes = 'mediaTypes' in details && Array.isArray(details.mediaTypes) ? details.mediaTypes : [];
+    if (
+      permission === 'media' &&
+      mediaTypes.includes('audio') &&
+      !mediaTypes.includes('video')
+    ) {
+      return callback(true);
+    }
+    callback(false);
+  });
+
+  ses.setPermissionCheckHandler((webContents, permission, _origin, details) => {
+    if (webContents !== win.webContents) {
+      return false;
+    }
+    const mediaType = 'mediaType' in details ? details.mediaType : undefined;
+    if (permission === 'media' && mediaType === 'audio') {
+      return true;
+    }
+    return false;
+  });
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -43,13 +103,12 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   void app.whenReady().then(() => {
-    lockDownPermissions();
+    initServices();
     const win = createMainWindow();
     mainWindow = win;
-    registerIpc(win, service);
-    service.subscribe((event) => {
-      if (event.type === 'status' && !win.isDestroyed()) win.setTitle(titleFor(event.snapshot));
-    });
+    configurePermissions(win);
+    registerIpc(win, service, settingsService);
+
     win.on('closed', () => {
       mainWindow = null;
     });
@@ -57,7 +116,8 @@ if (!app.requestSingleInstanceLock()) {
 
   // Always release the audio source before the process goes away.
   app.on('before-quit', () => {
-    void service.stop();
+    suggestionService?.destroy();
+    void service?.stop();
   });
   app.on('window-all-closed', () => app.quit());
 }

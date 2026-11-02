@@ -10,14 +10,30 @@ export const MODE_LABELS: Record<SessionMode, string> = {
   study: 'Study session',
 };
 
-/** 'demo' = scripted placeholder text, no audio. 'microphone' = real capture (milestone 2). */
-export type SourceKind = 'demo' | 'microphone';
+export const SOURCE_KINDS = ['demo', 'microphone'] as const;
+export type SourceKind = (typeof SOURCE_KINDS)[number];
 
 export type SessionStatus = 'idle' | 'starting' | 'active' | 'stopping';
 
 export interface StartSessionRequest {
   mode: SessionMode;
   title?: string | undefined;
+  source?: SourceKind | undefined;
+}
+
+export interface SuggestionItem {
+  id: string;
+  sessionId: string;
+  createdAt: string;
+  type: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
+  title: string;
+  content: string;
+}
+
+export interface AppSettings {
+  sttApiKey?: string;
+  geminiApiKey?: string;
+  sttProvider: 'deepgram' | 'google' | 'mock';
 }
 
 export interface SessionSummary {
@@ -79,4 +95,5 @@ export const err = (code: ErrorCode, message: string): Result<never> => ({
 export type SessionEvent =
   | { type: 'status'; snapshot: SessionSnapshot }
   | { type: 'segment'; segment: TranscriptSegment }
+  | { type: 'suggestion'; suggestion: SuggestionItem }
   | { type: 'error'; error: AppError };

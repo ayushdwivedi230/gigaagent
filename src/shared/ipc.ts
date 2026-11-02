@@ -1,4 +1,5 @@
 import type {
+  AppSettings,
   Result,
   SessionDetail,
   SessionEvent,
@@ -16,6 +17,9 @@ export const IPC = {
   historyGet: 'history:get',
   historyDelete: 'history:delete',
   historyClear: 'history:clear',
+  settingsGet: 'settings:get',
+  settingsSave: 'settings:save',
+  audioChunk: 'audio:chunk',
   event: 'session:event',
   windowMinimize: 'window:minimize',
   windowClose: 'window:close',
@@ -33,6 +37,13 @@ export interface MeetingAssistantApi {
     get(id: string): Promise<Result<SessionDetail>>;
     delete(id: string): Promise<Result<{ deleted: number }>>;
     clear(): Promise<Result<{ deleted: number }>>;
+  };
+  settings: {
+    get(): Promise<Result<AppSettings>>;
+    save(settings: Partial<AppSettings>): Promise<Result<AppSettings>>;
+  };
+  audio: {
+    sendChunk(buffer: ArrayBuffer): void;
   };
   /** Frameless window controls. */
   window: {
