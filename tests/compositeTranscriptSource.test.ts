@@ -45,3 +45,4 @@ test('CompositeTranscriptSource: manages both mic and system sources simultaneou
 
   await composite.stop();
 });
+

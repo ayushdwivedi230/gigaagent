@@ -119,3 +119,4 @@ test('SystemAudioGate: validates frame, security origin, user gesture, and media
   // Must be disarmed after success to prevent replay
   assert.equal(gate.isArmed(), false);
 });
+

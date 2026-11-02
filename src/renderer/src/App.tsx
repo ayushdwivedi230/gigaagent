@@ -68,8 +68,9 @@ export default function App() {
   const segments = inSession ? assistant.liveSegments : assistant.viewing?.segments ?? [];
   const finalCount = segments.filter((s) => s.isFinal).length;
 
-  const titlebarBadge =
-    active?.source === 'microphone'
+  const titlebarBadge = !winApi
+    ? 'Browser Tab'
+    : active?.source === 'microphone'
       ? 'Live Mic'
       : active?.source === 'system'
         ? 'System Audio'
@@ -277,15 +278,17 @@ export default function App() {
               {inSession ? '⏳' : '🎙'}
             </div>
             <p>
-              {inSession
-                ? source === 'microphone'
-                  ? 'Listening to microphone… speak to see live transcription.'
-                  : source === 'system'
-                    ? 'Capturing system audio… meeting audio will appear here.'
-                    : source === 'both'
-                      ? 'Capturing microphone and system audio… live transcription active.'
-                      : 'Playing demo interview script…'
-                : 'Press Start Session to begin capturing live audio & transcript.'}
+              {!winApi
+                ? 'Running in browser tab without Electron desktop runtime. For hardware audio capture and persistent history, switch to the floating GigaAgent desktop app window.'
+                : inSession
+                  ? source === 'microphone'
+                    ? 'Listening to microphone… speak to see live transcription.'
+                    : source === 'system'
+                      ? 'Capturing system audio… meeting audio will appear here.'
+                      : source === 'both'
+                        ? 'Capturing microphone and system audio… live transcription active.'
+                        : 'Playing demo interview script…'
+                  : 'Press Start Session to begin capturing live audio & transcript.'}
             </p>
           </div>
         ) : (

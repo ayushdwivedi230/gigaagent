@@ -17,6 +17,9 @@ import { systemAudioCapture } from '../audio/systemAudioCaptureService';
 
 const IDLE: SessionSnapshot = { status: 'idle', activeSession: null };
 const UNREACHABLE = 'The app service did not respond. Close and reopen the app.';
+export const DESKTOP_REQUIRED_ERROR =
+  'Browser preview mode: Desktop IPC is unavailable at localhost:5173. Please use the floating GigaAgent Electron desktop application window for live audio capture and session management.';
+
 // window.api is injected by the Electron preload script. Guard against it being
 // absent when the page is opened in a plain browser (e.g. Vite dev tab directly).
 const api = (window as { api?: typeof window.api }).api ?? null;
@@ -83,7 +86,10 @@ export function useAssistant(): AssistantState {
   );
 
   useEffect(() => {
-    if (!api) return;
+    if (!api) {
+      setError(DESKTOP_REQUIRED_ERROR);
+      return;
+    }
     let disposed = false;
     void (async () => {
       const current = await call(api.session.snapshot());
@@ -136,7 +142,10 @@ export function useAssistant(): AssistantState {
 
   const start = useCallback(
     async (mode: SessionMode, title: string, source: SourceKind = 'microphone') => {
-      if (!api) return;
+      if (!api) {
+        setError(DESKTOP_REQUIRED_ERROR);
+        return;
+      }
       setError(null);
 
       if (source === 'microphone' || source === 'both') {
@@ -192,7 +201,10 @@ export function useAssistant(): AssistantState {
   const stop = useCallback(async () => {
     audioCapture.stop();
     systemAudioCapture.stop();
-    if (!api) return;
+    if (!api) {
+      setError(DESKTOP_REQUIRED_ERROR);
+      return;
+    }
     const finished = await call(api.session.stop());
     if (finished) await view(finished.id);
   }, [call, view]);

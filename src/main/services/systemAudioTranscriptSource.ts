@@ -311,3 +311,4 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
     this.emitError = undefined;
   }
 }
+
