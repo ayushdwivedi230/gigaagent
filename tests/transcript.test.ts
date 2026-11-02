@@ -6,6 +6,7 @@ import type { TranscriptSegment } from '@shared/types';
 const seg = (id: string, text: string, isFinal: boolean, startMs = 0): TranscriptSegment => ({
   id,
   sessionId: 's1',
+  speaker: 'user',
   startMs,
   endMs: isFinal ? startMs + 1000 : null,
   text,

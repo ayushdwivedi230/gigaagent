@@ -4,11 +4,14 @@ import { join } from 'node:path';
 export const APP_NAME = 'AI Meeting Assistant';
 
 const devUrl = (): string | undefined =>
-  app.isPackaged ? undefined : process.env['ELECTRON_RENDERER_URL'];
+  app?.isPackaged ? undefined : process.env['ELECTRON_RENDERER_URL'];
 
 export function isAppUrl(url: string): boolean {
   const dev = devUrl();
-  return dev ? url.startsWith(dev) : url.startsWith('file://');
+  if (dev && url.startsWith(dev)) return true;
+  if (url.startsWith('file://')) return true;
+  if (!app?.isPackaged && url.startsWith('http://localhost:5173')) return true;
+  return false;
 }
 
 export function createMainWindow(): BrowserWindow {

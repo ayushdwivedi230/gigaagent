@@ -19,6 +19,7 @@ test('SuggestionService produces heuristic suggestions for interview mode', asyn
   const segment: TranscriptSegment = {
     id: 'seg_1',
     sessionId: 'session_123',
+    speaker: 'user',
     startMs: 0,
     endMs: 1000,
     text: 'Could you walk me through your background and project experience?',
@@ -53,6 +54,7 @@ test('SuggestionService ignores interim segments', async () => {
   const interimSegment: TranscriptSegment = {
     id: 'seg_2',
     sessionId: 'session_456',
+    speaker: 'user',
     startMs: 0,
     endMs: null,
     text: 'We should decide the action item for next week',

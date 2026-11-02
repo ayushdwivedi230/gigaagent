@@ -66,8 +66,17 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
     this.connectDeepgram(apiKey);
   }
 
-  pushAudioChunk(chunk: ArrayBuffer): void {
+  pushAudioChunk(arg1: ArrayBuffer | 'mic' | 'system', arg2?: ArrayBuffer): void {
     if (!this.running) return;
+
+    let chunk: ArrayBuffer;
+    if (arg1 instanceof ArrayBuffer) {
+      chunk = arg1;
+    } else if (arg2 instanceof ArrayBuffer) {
+      chunk = arg2;
+    } else {
+      return;
+    }
 
     // If using real WebSocket connection
     if (this.ws) {
@@ -184,6 +193,7 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
 
     this.emitSegment?.({
       id: this.currentSegmentId,
+      speaker: 'user',
       text,
       isFinal,
       startMs,
@@ -245,6 +255,7 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
 
         this.emitSegment?.({
           id: this.currentSegmentId,
+          speaker: 'user',
           text: `[Mic Capture] ${partial}`,
           isFinal,
           startMs,

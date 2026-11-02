@@ -45,9 +45,9 @@ export default function App() {
       ? 'idle'
       : transitioning
         ? 'pending'
-        : active.source === 'microphone'
-          ? 'recording'
-          : 'demo';
+        : active.source === 'demo'
+          ? 'demo'
+          : 'recording';
 
   const bannerStatus =
     bannerKind === 'idle'
@@ -56,13 +56,28 @@ export default function App() {
         ? snapshot.status === 'starting'
           ? 'Starting…'
           : 'Stopping…'
-        : bannerKind === 'recording'
-          ? '● Live Mic'
-          : '● Demo Script';
+        : active?.source === 'microphone'
+          ? '● Live Mic (You)'
+          : active?.source === 'system'
+            ? '● System Audio (Meeting)'
+            : active?.source === 'both'
+              ? '● Mic + System Audio'
+              : '● Demo Script';
 
   // ── Segments to display ───────────────────────────────
   const segments = inSession ? assistant.liveSegments : assistant.viewing?.segments ?? [];
   const finalCount = segments.filter((s) => s.isFinal).length;
+
+  const titlebarBadge =
+    active?.source === 'microphone'
+      ? 'Live Mic'
+      : active?.source === 'system'
+        ? 'System Audio'
+        : active?.source === 'both'
+          ? 'Dual Audio'
+          : active
+            ? 'Demo Script'
+            : 'Copilot Ready';
 
   return (
     <div className="app">
@@ -70,9 +85,7 @@ export default function App() {
       <div className="titlebar">
         <span className="titlebar__dot" aria-hidden="true" />
         <span className="titlebar__name">GigaAgent AI Copilot</span>
-        <span className="titlebar__badge">
-          {active?.source === 'microphone' ? 'Live Mic' : 'Copilot Active'}
-        </span>
+        <span className="titlebar__badge">{titlebarBadge}</span>
         <div className="titlebar__controls">
           <button
             className="wbtn wbtn--settings"
@@ -142,8 +155,31 @@ export default function App() {
             className={`source-btn${source === 'microphone' ? ' source-btn--active' : ''}`}
             disabled={!idle}
             onClick={() => setSource('microphone')}
+            title="Capture local microphone audio only"
           >
-            🎙 Live Microphone
+            🎙 Mic (You)
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={source === 'system'}
+            className={`source-btn${source === 'system' ? ' source-btn--active' : ''}`}
+            disabled={!idle}
+            onClick={() => setSource('system')}
+            title="Capture Windows system / meeting playback audio only"
+          >
+            🔊 System (Meeting)
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={source === 'both'}
+            className={`source-btn${source === 'both' ? ' source-btn--active' : ''}`}
+            disabled={!idle}
+            onClick={() => setSource('both')}
+            title="Capture both local microphone and Windows system playback audio"
+          >
+            🎙+🔊 Both
           </button>
           <button
             type="button"
@@ -152,8 +188,9 @@ export default function App() {
             className={`source-btn${source === 'demo' ? ' source-btn--active' : ''}`}
             disabled={!idle}
             onClick={() => setSource('demo')}
+            title="Run simulated interview conversation"
           >
-            📝 Demo Script
+            📝 Demo
           </button>
         </div>
 
@@ -243,7 +280,11 @@ export default function App() {
               {inSession
                 ? source === 'microphone'
                   ? 'Listening to microphone… speak to see live transcription.'
-                  : 'Playing demo interview script…'
+                  : source === 'system'
+                    ? 'Capturing system audio… meeting audio will appear here.'
+                    : source === 'both'
+                      ? 'Capturing microphone and system audio… live transcription active.'
+                      : 'Playing demo interview script…'
                 : 'Press Start Session to begin capturing live audio & transcript.'}
             </p>
           </div>
@@ -255,14 +296,26 @@ export default function App() {
             aria-relevant="additions"
             aria-label="Live transcript"
           >
-            {segments.map((seg) => (
-              <li key={seg.id} className={seg.isFinal ? 'line' : 'line line--partial'}>
-                <time dateTime={`PT${Math.floor(seg.startMs / 1000)}S`}>
-                  {formatClock(seg.startMs)}
-                </time>
-                <p>{seg.text}</p>
-              </li>
-            ))}
+            {segments.map((seg) => {
+              const isSystem = seg.speaker === 'system';
+              return (
+                <li key={seg.id} className={seg.isFinal ? 'line' : 'line line--partial'}>
+                  <div className="line__meta">
+                    <span
+                      className={`speaker-badge ${
+                        isSystem ? 'speaker-badge--system' : 'speaker-badge--user'
+                      }`}
+                    >
+                      {isSystem ? 'Meeting / Guest' : 'You'}
+                    </span>
+                    <time dateTime={`PT${Math.floor(seg.startMs / 1000)}S`}>
+                      {formatClock(seg.startMs)}
+                    </time>
+                  </div>
+                  <p>{seg.text}</p>
+                </li>
+              );
+            })}
           </ol>
         )}
       </div>

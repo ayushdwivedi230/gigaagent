@@ -66,6 +66,7 @@ test('SqliteSessionRepository: application restart persistence (file-backed)', a
   repo1.upsertSegment({
     id: 'seg_1',
     sessionId: 's_persisted',
+    speaker: 'user',
     startMs: 0,
     endMs: 2500,
     text: 'Let us discuss Q4 priorities.',
@@ -123,6 +124,7 @@ test('SqliteSessionRepository: preserves chronological transcript ordering and i
   repo.upsertSegment({
     id: 'seg_later',
     sessionId: 's_order',
+    speaker: 'system',
     startMs: 5000,
     endMs: 7000,
     text: 'Second spoken thought.',
@@ -132,6 +134,7 @@ test('SqliteSessionRepository: preserves chronological transcript ordering and i
   repo.upsertSegment({
     id: 'seg_earlier',
     sessionId: 's_order',
+    speaker: 'user',
     startMs: 1000,
     endMs: 3000,
     text: 'First spoken thought.',
@@ -142,6 +145,7 @@ test('SqliteSessionRepository: preserves chronological transcript ordering and i
   repo.upsertSegment({
     id: 'seg_interim',
     sessionId: 's_order',
+    speaker: 'system',
     startMs: 8000,
     endMs: null,
     text: 'Third thought partial',
@@ -151,6 +155,7 @@ test('SqliteSessionRepository: preserves chronological transcript ordering and i
   repo.upsertSegment({
     id: 'seg_interim',
     sessionId: 's_order',
+    speaker: 'system',
     startMs: 8000,
     endMs: 9500,
     text: 'Third thought finalized.',
@@ -161,6 +166,7 @@ test('SqliteSessionRepository: preserves chronological transcript ordering and i
   repo.upsertSegment({
     id: 'seg_interim',
     sessionId: 's_order',
+    speaker: 'system',
     startMs: 8000,
     endMs: null,
     text: 'Late interim garbage',
@@ -194,6 +200,7 @@ test('SqliteSessionRepository: session deletion cascades to segments and suggest
   repo.upsertSegment({
     id: 'seg_del_1',
     sessionId: 's_delete',
+    speaker: 'user',
     startMs: 0,
     endMs: 1000,
     text: 'Will be deleted.',
@@ -276,3 +283,49 @@ test('SqliteSessionRepository: corruption recovery backs up corrupted file and c
   repo.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
+
+test('SqliteSessionRepository: Migration 2 applies speaker column and distinguishes user vs system speakers', async () => {
+  const repo = await SqliteSessionRepository.create({ filePath: null });
+
+  repo.create({
+    id: 's_dual_speakers',
+    title: 'Dual Speaker Session',
+    mode: 'meeting',
+    source: 'both',
+    startedAt: '2026-11-02T15:00:00.000Z',
+    endedAt: null,
+    segmentCount: 0,
+  });
+
+  repo.upsertSegment({
+    id: 'seg_user_1',
+    sessionId: 's_dual_speakers',
+    speaker: 'user',
+    startMs: 1000,
+    endMs: 3000,
+    text: 'I have a question about the deployment pipeline.',
+    isFinal: true,
+  });
+
+  repo.upsertSegment({
+    id: 'seg_sys_1',
+    sessionId: 's_dual_speakers',
+    speaker: 'system',
+    startMs: 4000,
+    endMs: 6500,
+    text: 'The deployment pipeline runs automated canary checks before promotion.',
+    isFinal: true,
+  });
+
+  const detail = repo.get('s_dual_speakers');
+  assert.ok(detail);
+  assert.equal(detail.segments.length, 2);
+  assert.equal(detail.segments[0]?.speaker, 'user');
+  assert.equal(detail.segments[0]?.text, 'I have a question about the deployment pipeline.');
+  assert.equal(detail.segments[1]?.speaker, 'system');
+  assert.equal(detail.segments[1]?.text, 'The deployment pipeline runs automated canary checks before promotion.');
+
+  repo.close();
+});
+
+

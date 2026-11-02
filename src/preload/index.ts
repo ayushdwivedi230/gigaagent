@@ -21,9 +21,13 @@ const api: MeetingAssistantApi = {
     get: () => ipcRenderer.invoke(IPC.settingsGet),
     save: (settings) => ipcRenderer.invoke(IPC.settingsSave, settings),
   },
+  systemAudio: {
+    arm: () => ipcRenderer.invoke(IPC.systemAudioArm),
+    disarm: () => ipcRenderer.invoke(IPC.systemAudioDisarm),
+  },
   audio: {
-    sendChunk: (buffer) => {
-      ipcRenderer.send(IPC.audioChunk, buffer);
+    sendChunk: (source, buffer) => {
+      ipcRenderer.send(IPC.audioChunk, source, buffer);
     },
   },
   window: {

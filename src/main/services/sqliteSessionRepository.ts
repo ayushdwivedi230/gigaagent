@@ -7,6 +7,7 @@ import type {
   SessionMode,
   SessionSummary,
   SourceKind,
+  SpeakerKind,
   SuggestionItem,
   TranscriptSegment,
 } from '@shared/types';
@@ -66,6 +67,18 @@ export const MIGRATIONS: SchemaMigration[] = [
         CREATE INDEX IF NOT EXISTS idx_suggestions_session_time ON suggestions(session_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
       `);
+    },
+  },
+  {
+    version: 2,
+    description: 'Add speaker column and speaker index to transcript_segments table',
+    up: (db: SqlJsDatabase) => {
+      const tableInfo = db.exec('PRAGMA table_info(transcript_segments);');
+      const columns = tableInfo[0]?.values?.map((col) => col[1]) || [];
+      if (!columns.includes('speaker')) {
+        db.run("ALTER TABLE transcript_segments ADD COLUMN speaker TEXT NOT NULL DEFAULT 'user';");
+        db.run('CREATE INDEX IF NOT EXISTS idx_segments_speaker ON transcript_segments(session_id, speaker);');
+      }
     },
   },
 ];
@@ -207,6 +220,8 @@ export class SqliteSessionRepository implements SessionRepository {
   }
 
   upsertSegment(segment: TranscriptSegment): void {
+    const speaker = segment.speaker || 'user';
+
     // If an earlier final segment exists, do not overwrite it with a late interim result
     const checkStmt = this.db.prepare(
       'SELECT is_final FROM transcript_segments WHERE session_id = ? AND id = ?;'
@@ -223,9 +238,10 @@ export class SqliteSessionRepository implements SessionRepository {
     }
 
     this.db.run(
-      `INSERT INTO transcript_segments (id, session_id, start_ms, end_ms, text, is_final)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO transcript_segments (id, session_id, speaker, start_ms, end_ms, text, is_final)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_id, id) DO UPDATE SET
+         speaker = excluded.speaker,
          start_ms = excluded.start_ms,
          end_ms = excluded.end_ms,
          text = excluded.text,
@@ -233,6 +249,7 @@ export class SqliteSessionRepository implements SessionRepository {
       [
         segment.id,
         segment.sessionId,
+        speaker,
         segment.startMs,
         segment.endMs ?? null,
         segment.text,
@@ -315,7 +332,7 @@ export class SqliteSessionRepository implements SessionRepository {
 
     // Segments in chronological order
     const segStmt = this.db.prepare(
-      `SELECT id, session_id, start_ms, end_ms, text, is_final
+      `SELECT id, session_id, speaker, start_ms, end_ms, text, is_final
        FROM transcript_segments
        WHERE session_id = ?
        ORDER BY start_ms ASC, rowid ASC;`
@@ -328,6 +345,7 @@ export class SqliteSessionRepository implements SessionRepository {
       segments.push({
         id: String(segRow.id),
         sessionId: String(segRow.session_id),
+        speaker: (segRow.speaker as SpeakerKind) || 'user',
         startMs: Number(segRow.start_ms),
         endMs: segRow.end_ms !== null && segRow.end_ms !== undefined ? Number(segRow.end_ms) : null,
         text: String(segRow.text),
@@ -411,3 +429,4 @@ export class SqliteSessionRepository implements SessionRepository {
     }
   }
 }
+

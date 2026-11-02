@@ -10,8 +10,10 @@ export const MODE_LABELS: Record<SessionMode, string> = {
   study: 'Study session',
 };
 
-export const SOURCE_KINDS = ['demo', 'microphone'] as const;
+export const SOURCE_KINDS = ['demo', 'microphone', 'system', 'both'] as const;
 export type SourceKind = (typeof SOURCE_KINDS)[number];
+
+export type SpeakerKind = 'user' | 'system';
 
 export type SessionStatus = 'idle' | 'starting' | 'active' | 'stopping';
 
@@ -19,6 +21,11 @@ export interface StartSessionRequest {
   mode: SessionMode;
   title?: string | undefined;
   source?: SourceKind | undefined;
+}
+
+export interface AudioChunkPacket {
+  source: 'mic' | 'system';
+  buffer: ArrayBuffer;
 }
 
 export interface SuggestionItem {
@@ -64,6 +71,7 @@ export interface SessionSummary {
 export interface TranscriptSegment {
   id: string;
   sessionId: string;
+  speaker: SpeakerKind;
   startMs: number; // offset from session start
   endMs: number | null;
   text: string;
@@ -71,7 +79,9 @@ export interface TranscriptSegment {
 }
 
 /** What a transcript source emits; the session service attaches the sessionId. */
-export type RawSegment = Omit<TranscriptSegment, 'sessionId'>;
+export type RawSegment = Omit<TranscriptSegment, 'sessionId' | 'speaker'> & {
+  speaker?: SpeakerKind;
+};
 
 export interface SessionDetail {
   summary: SessionSummary;

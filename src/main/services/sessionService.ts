@@ -11,6 +11,7 @@ import type {
   SessionSummary,
   SourceKind,
   StartSessionRequest,
+  TranscriptSegment,
 } from '@shared/types';
 import type { SessionRepository } from './sessionRepository';
 import type { TranscriptSource } from './transcriptSource';
@@ -172,7 +173,11 @@ export class SessionService {
   private handleSegment(active: ActiveSession, raw: RawSegment): void {
     // Ignore anything a source emits after its session ended.
     if (this.active !== active) return;
-    const segment = { ...raw, sessionId: active.summary.id };
+    const segment: TranscriptSegment = {
+      ...raw,
+      speaker: raw.speaker || 'user',
+      sessionId: active.summary.id,
+    };
     this.repository.upsertSegment(segment);
     if (segment.isFinal && !active.finalIds.has(segment.id)) {
       active.finalIds.add(segment.id);

@@ -13,6 +13,7 @@ import type {
   UpdateSettingsRequest,
 } from '@shared/types';
 import { audioCapture } from '../audio/audioCaptureService';
+import { systemAudioCapture } from '../audio/systemAudioCaptureService';
 
 const IDLE: SessionSnapshot = { status: 'idle', activeSession: null };
 const UNREACHABLE = 'The app service did not respond. Close and reopen the app.';
@@ -138,11 +139,11 @@ export function useAssistant(): AssistantState {
       if (!api) return;
       setError(null);
 
-      if (source === 'microphone') {
+      if (source === 'microphone' || source === 'both') {
         try {
           await audioCapture.start({
             onChunk: (buffer) => {
-              api.audio.sendChunk(buffer);
+              api.audio.sendChunk('mic', buffer);
             },
             onError: (err) => {
               setError(err.message);
@@ -158,9 +159,31 @@ export function useAssistant(): AssistantState {
         }
       }
 
+      if (source === 'system' || source === 'both') {
+        try {
+          await systemAudioCapture.start({
+            onChunk: (buffer) => {
+              api.audio.sendChunk('system', buffer);
+            },
+            onError: (err) => {
+              setError(err.message);
+            },
+          });
+        } catch (sysErr) {
+          audioCapture.stop();
+          setError(
+            sysErr instanceof Error
+              ? sysErr.message
+              : 'Failed to capture system audio. Check permissions.',
+          );
+          return;
+        }
+      }
+
       const res = await call(api.session.start({ mode, title, source }));
       if (!res) {
         audioCapture.stop();
+        systemAudioCapture.stop();
       }
     },
     [call],
@@ -168,6 +191,7 @@ export function useAssistant(): AssistantState {
 
   const stop = useCallback(async () => {
     audioCapture.stop();
+    systemAudioCapture.stop();
     if (!api) return;
     const finished = await call(api.session.stop());
     if (finished) await view(finished.id);

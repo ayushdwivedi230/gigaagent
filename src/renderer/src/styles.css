@@ -408,9 +408,9 @@ button, input { font: inherit; color: inherit; }
 }
 
 .line {
-  display: grid;
-  grid-template-columns: 40px 1fr;
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   padding: 6px 0;
   border-bottom: 1px solid rgba(255,255,255,0.035);
   animation: lineIn 0.2s ease forwards;
@@ -418,11 +418,40 @@ button, input { font: inherit; color: inherit; }
 
 .line:last-child { border-bottom: none; }
 
-.line time {
-  font-size: 10.5px;
+.line__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.speaker-badge {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.speaker-badge--user {
+  background: rgba(59, 130, 246, 0.18);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}
+
+.speaker-badge--system {
+  background: rgba(168, 85, 247, 0.18);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.35);
+}
+
+.line time,
+.line__meta time {
+  font-size: 10px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-  padding-top: 2px;
   letter-spacing: 0.01em;
 }
 
@@ -661,7 +690,8 @@ button, input { font: inherit; color: inherit; }
 
 /* ── Audio Source Selector ──────────────────────────────── */
 .source-selector {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 6px;
   margin-bottom: 8px;
 }

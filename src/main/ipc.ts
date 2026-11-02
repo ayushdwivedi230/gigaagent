@@ -6,6 +6,7 @@ import { err, ok } from '@shared/types';
 import type { Result, UpdateSettingsRequest } from '@shared/types';
 import type { SessionService } from './services/sessionService';
 import type { SettingsService } from './services/settingsService';
+import type { SystemAudioGate } from './services/systemAudioGate';
 
 /**
  * Registers request/response handlers and forwards service events to the window.
@@ -16,6 +17,7 @@ export function registerIpc(
   win: BrowserWindow,
   service: SessionService,
   settingsService: SettingsService,
+  systemAudioGate?: SystemAudioGate,
 ): () => void {
   const trusted = (event: IpcMainInvokeEvent | IpcMainEvent): boolean =>
     !win.isDestroyed() && event.sender === win.webContents;
@@ -57,18 +59,46 @@ export function registerIpc(
     return ok(settingsService.saveSettings(raw as UpdateSettingsRequest));
   });
 
-  const onAudioChunk = (event: IpcMainEvent, chunk: unknown): void => {
+  handle(IPC.systemAudioArm, () => {
+    systemAudioGate?.arm();
+    return ok({ armed: true });
+  });
+  handle(IPC.systemAudioDisarm, () => {
+    systemAudioGate?.disarm();
+    return ok({ armed: false });
+  });
+
+  const onAudioChunk = (
+    event: IpcMainEvent,
+    arg1: unknown,
+    arg2?: unknown,
+  ): void => {
     if (!trusted(event)) return;
     const activeSource = service.getActiveSource();
     if (!activeSource || !('pushAudioChunk' in activeSource)) return;
-    const target = activeSource as { pushAudioChunk: (buf: ArrayBuffer) => void };
 
-    if (chunk instanceof ArrayBuffer) {
-      target.pushAudioChunk(chunk);
-    } else if (ArrayBuffer.isView(chunk)) {
-      const copy = new Uint8Array(chunk.byteLength);
-      copy.set(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
-      target.pushAudioChunk(copy.buffer as ArrayBuffer);
+    let sourceKind: 'mic' | 'system' = 'mic';
+    let rawChunk: unknown = arg1;
+
+    if (arg1 === 'mic' || arg1 === 'system') {
+      sourceKind = arg1;
+      rawChunk = arg2;
+    }
+
+    let chunkBuffer: ArrayBuffer | null = null;
+    if (rawChunk instanceof ArrayBuffer) {
+      chunkBuffer = rawChunk;
+    } else if (ArrayBuffer.isView(rawChunk)) {
+      const copy = new Uint8Array(rawChunk.byteLength);
+      copy.set(new Uint8Array(rawChunk.buffer, rawChunk.byteOffset, rawChunk.byteLength));
+      chunkBuffer = copy.buffer as ArrayBuffer;
+    }
+
+    if (chunkBuffer) {
+      const target = activeSource as {
+        pushAudioChunk: (a: 'mic' | 'system' | ArrayBuffer, b?: ArrayBuffer) => void;
+      };
+      target.pushAudioChunk(sourceKind, chunkBuffer);
     }
   };
   ipcMain.on(IPC.audioChunk, onAudioChunk);

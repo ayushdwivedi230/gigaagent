@@ -42,6 +42,7 @@ function setup(configure?: (s: FakeSource) => void) {
 
 const raw = (id: string, text: string, isFinal: boolean): RawSegment => ({
   id,
+  speaker: 'user',
   text,
   isFinal,
   startMs: 0,

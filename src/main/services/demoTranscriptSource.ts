@@ -76,6 +76,7 @@ export class DemoTranscriptSource implements TranscriptSource {
     const isFinal = count === words.length;
     this.emit?.({
       id,
+      speaker: this.line % 2 === 0 ? 'user' : 'system',
       text: words.slice(0, count).join(' '),
       isFinal,
       startMs,

@@ -20,6 +20,8 @@ export const IPC = {
   historyClear: 'history:clear',
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
+  systemAudioArm: 'system-audio:arm',
+  systemAudioDisarm: 'system-audio:disarm',
   audioChunk: 'audio:chunk',
   event: 'session:event',
   windowMinimize: 'window:minimize',
@@ -43,8 +45,12 @@ export interface MeetingAssistantApi {
     get(): Promise<Result<ClientSettings>>;
     save(settings: UpdateSettingsRequest): Promise<Result<ClientSettings>>;
   };
+  systemAudio: {
+    arm(): Promise<Result<{ armed: boolean }>>;
+    disarm(): Promise<Result<{ armed: boolean }>>;
+  };
   audio: {
-    sendChunk(buffer: ArrayBuffer): void;
+    sendChunk(source: 'mic' | 'system', buffer: ArrayBuffer): void;
   };
   /** Frameless window controls. */
   window: {
