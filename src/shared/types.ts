@@ -76,6 +76,7 @@ export type RawSegment = Omit<TranscriptSegment, 'sessionId'>;
 export interface SessionDetail {
   summary: SessionSummary;
   segments: TranscriptSegment[];
+  suggestions?: SuggestionItem[];
 }
 
 export interface SessionSnapshot {

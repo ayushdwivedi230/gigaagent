@@ -6,6 +6,8 @@ import { APP_NAME, createMainWindow } from './window';
 import { DemoTranscriptSource } from './services/demoTranscriptSource';
 import { MicrophoneTranscriptSource } from './services/microphoneTranscriptSource';
 import { InMemorySessionRepository } from './services/sessionRepository';
+import type { SessionRepository } from './services/sessionRepository';
+import { SqliteSessionRepository } from './services/sqliteSessionRepository';
 import { SessionService } from './services/sessionService';
 import { SettingsService } from './services/settingsService';
 import { SuggestionService } from './services/suggestionService';
@@ -13,15 +15,25 @@ import type { SessionSnapshot } from '@shared/types';
 
 let mainWindow: BrowserWindow | null = null;
 let settingsService: SettingsService;
+let repository: SessionRepository;
 let service: SessionService;
 let suggestionService: SuggestionService;
 
-function initServices(): void {
-  const settingsPath = path.join(app.getPath('userData'), 'settings.json');
+async function initServices(): Promise<void> {
+  const userDataDir = app.getPath('userData');
+  const settingsPath = path.join(userDataDir, 'settings.json');
   settingsService = new SettingsService(settingsPath, safeStorage);
 
+  const dbPath = path.join(userDataDir, 'sessions.db');
+  try {
+    repository = await SqliteSessionRepository.create({ filePath: dbPath });
+  } catch (err) {
+    console.error('[Main] Failed to initialize SQLite repository, falling back to in-memory', err);
+    repository = new InMemorySessionRepository();
+  }
+
   service = new SessionService({
-    repository: new InMemorySessionRepository(),
+    repository,
     createSource: (_mode, sourceKind) => {
       if (sourceKind === 'microphone') {
         return new MicrophoneTranscriptSource({ settingsService });
@@ -102,8 +114,8 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow.focus();
   });
 
-  void app.whenReady().then(() => {
-    initServices();
+  void app.whenReady().then(async () => {
+    await initServices();
     const win = createMainWindow();
     mainWindow = win;
     configurePermissions(win);
@@ -118,6 +130,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     suggestionService?.destroy();
     void service?.stop();
+    repository?.close?.();
   });
   app.on('window-all-closed', () => app.quit());
 }

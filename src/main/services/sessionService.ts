@@ -163,6 +163,9 @@ export class SessionService {
   }
 
   emitEvent(event: SessionEvent): void {
+    if (event.type === 'suggestion') {
+      this.repository.upsertSuggestion?.(event.suggestion);
+    }
     this.emit(event);
   }
 
