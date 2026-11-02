@@ -36,6 +36,21 @@ export interface AppSettings {
   sttProvider: 'deepgram' | 'google' | 'mock';
 }
 
+/** Sanitized settings safe for renderer consumption (secrets masked). */
+export interface ClientSettings {
+  sttProvider: 'deepgram' | 'google' | 'mock';
+  hasSttKey: boolean;
+  hasGeminiKey: boolean;
+  maskedSttKey?: string;
+  maskedGeminiKey?: string;
+}
+
+export interface UpdateSettingsRequest {
+  sttProvider?: 'deepgram' | 'google' | 'mock';
+  sttApiKey?: string;
+  geminiApiKey?: string;
+}
+
 export interface SessionSummary {
   id: string;
   title: string;

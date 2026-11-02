@@ -67,3 +67,4 @@ test('SuggestionService ignores interim segments', async () => {
 
   service.destroy();
 });
+

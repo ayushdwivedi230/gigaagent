@@ -62,3 +62,4 @@ export function SuggestionsPanel({ suggestions }: Props) {
     </div>
   );
 }
+

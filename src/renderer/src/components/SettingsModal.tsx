@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
-import type { AppSettings } from '@shared/types';
+import type { ClientSettings, UpdateSettingsRequest } from '@shared/types';
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
-  settings: AppSettings | null;
-  onSave: (updates: Partial<AppSettings>) => Promise<void>;
+  settings: ClientSettings | null;
+  onSave: (updates: UpdateSettingsRequest) => Promise<void>;
 }
 
 export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
@@ -18,8 +18,8 @@ export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
   useEffect(() => {
     if (settings) {
       setProvider(settings.sttProvider || 'deepgram');
-      setSttKey(settings.sttApiKey || '');
-      setGeminiKey(settings.geminiApiKey || '');
+      setSttKey('');
+      setGeminiKey('');
     }
   }, [settings, isOpen]);
 
@@ -31,11 +31,20 @@ export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
     setSaveSuccess(false);
 
     try {
-      await onSave({
+      const updates: UpdateSettingsRequest = {
         sttProvider: provider,
-        sttApiKey: sttKey.trim(),
-        geminiApiKey: geminiKey.trim(),
-      });
+      };
+
+      if (sttKey.trim()) {
+        updates.sttApiKey = sttKey.trim();
+      }
+      if (geminiKey.trim()) {
+        updates.geminiApiKey = geminiKey.trim();
+      }
+
+      await onSave(updates);
+      setSttKey('');
+      setGeminiKey('');
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 2000);
     } finally {
@@ -56,7 +65,7 @@ export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
         <form onSubmit={handleSubmit} className="modal-body">
           <p className="modal-description">
             Credentials are securely encrypted at rest using Windows DPAPI via Electron{' '}
-            <code>safeStorage</code>.
+            <code>safeStorage</code>. Secrets are never exposed to renderer logs.
           </p>
 
           <div className="field-group">
@@ -78,14 +87,22 @@ export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
           <div className="field-group">
             <label htmlFor="settings-stt-key">
               Deepgram API Key
-              <span className="field-hint"> (or set DEEPGRAM_API_KEY environment variable)</span>
+              {settings?.hasSttKey ? (
+                <span className="field-hint"> · Active ({settings.maskedSttKey})</span>
+              ) : (
+                <span className="field-hint"> · (or set DEEPGRAM_API_KEY environment variable)</span>
+              )}
             </label>
             <input
               id="settings-stt-key"
               type="password"
               value={sttKey}
               onChange={(e) => setSttKey(e.target.value)}
-              placeholder="e.g. 4880c54..."
+              placeholder={
+                settings?.hasSttKey
+                  ? 'Enter new key to replace existing'
+                  : 'e.g. 4880c54...'
+              }
               autoComplete="off"
             />
           </div>
@@ -93,14 +110,22 @@ export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
           <div className="field-group">
             <label htmlFor="settings-gemini-key">
               Google Gemini API Key
-              <span className="field-hint"> (for live contextual copilot suggestions)</span>
+              {settings?.hasGeminiKey ? (
+                <span className="field-hint"> · Active ({settings.maskedGeminiKey})</span>
+              ) : (
+                <span className="field-hint"> · (for live contextual copilot suggestions)</span>
+              )}
             </label>
             <input
               id="settings-gemini-key"
               type="password"
               value={geminiKey}
               onChange={(e) => setGeminiKey(e.target.value)}
-              placeholder="e.g. AIzaSy..."
+              placeholder={
+                settings?.hasGeminiKey
+                  ? 'Enter new key to replace existing'
+                  : 'e.g. AIzaSy...'
+              }
               autoComplete="off"
             />
           </div>

@@ -41,6 +41,16 @@ test('SettingsService saves and loads settings with encryption adapter', () => {
   assert.equal(loadedSettings.geminiApiKey, 'test-gemini-key');
   assert.equal(loadedSettings.sttProvider, 'google');
 
+  // Verify client settings mask raw keys
+  const clientSettings = reloaded.getClientSettings();
+  assert.equal(clientSettings.hasSttKey, true);
+  assert.equal(clientSettings.hasGeminiKey, true);
+  assert.equal(clientSettings.maskedSttKey, '••••••••-key');
+  assert.equal(clientSettings.maskedGeminiKey, '••••••••-key');
+  assert.equal((clientSettings as unknown as Record<string, unknown>).sttApiKey, undefined);
+  assert.equal((clientSettings as unknown as Record<string, unknown>).geminiApiKey, undefined);
+
   // Clean up
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
+

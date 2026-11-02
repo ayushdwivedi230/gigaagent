@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { applySegment } from '@shared/transcript';
 import type {
-  AppSettings,
+  ClientSettings,
   Result,
   SessionDetail,
   SessionMode,
@@ -10,6 +10,7 @@ import type {
   SourceKind,
   SuggestionItem,
   TranscriptSegment,
+  UpdateSettingsRequest,
 } from '@shared/types';
 import { audioCapture } from '../audio/audioCaptureService';
 
@@ -26,7 +27,7 @@ export interface AssistantState {
   suggestions: SuggestionItem[];
   viewing: SessionDetail | null;
   error: string | null;
-  settings: AppSettings | null;
+  settings: ClientSettings | null;
   start: (mode: SessionMode, title: string, source?: SourceKind) => Promise<void>;
   stop: () => Promise<void>;
   view: (id: string) => Promise<void>;
@@ -35,7 +36,7 @@ export interface AssistantState {
   clearAll: () => Promise<void>;
   dismissError: () => void;
   loadSettings: () => Promise<void>;
-  saveSettings: (updates: Partial<AppSettings>) => Promise<void>;
+  saveSettings: (updates: UpdateSettingsRequest) => Promise<void>;
 }
 
 export function useAssistant(): AssistantState {
@@ -45,7 +46,7 @@ export function useAssistant(): AssistantState {
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [viewing, setViewing] = useState<SessionDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [settings, setSettings] = useState<ClientSettings | null>(null);
 
   /** Unwraps an IPC Result; surfaces failures as a user-facing message. */
   const call = useCallback(async <T,>(request: Promise<Result<T>>): Promise<T | undefined> => {
@@ -72,7 +73,7 @@ export function useAssistant(): AssistantState {
   }, [call]);
 
   const saveSettings = useCallback(
-    async (updates: Partial<AppSettings>) => {
+    async (updates: UpdateSettingsRequest) => {
       if (!api) return;
       const updated = await call(api.settings.save(updates));
       if (updated) setSettings(updated);

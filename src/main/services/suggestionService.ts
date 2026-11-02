@@ -5,12 +5,14 @@ export interface SuggestionServiceOptions {
   settingsService: SettingsService;
   onSuggestion: (suggestion: SuggestionItem) => void;
   debounceMs?: number;
+  minIntervalMs?: number;
 }
 
 export class SuggestionService {
   private readonly settingsService: SettingsService;
   private readonly onSuggestion: (suggestion: SuggestionItem) => void;
   private readonly debounceMs: number;
+  private readonly minIntervalMs: number;
 
   private activeSessionId: string | null = null;
   private currentMode: SessionMode = 'mock-interview';
@@ -18,11 +20,14 @@ export class SuggestionService {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private suggestionCounter = 0;
   private isProcessing = false;
+  private lastQueryTimestamp = 0;
+  private lastQueriedText = '';
 
   constructor(options: SuggestionServiceOptions) {
     this.settingsService = options.settingsService;
     this.onSuggestion = options.onSuggestion;
     this.debounceMs = options.debounceMs ?? 2500;
+    this.minIntervalMs = options.minIntervalMs ?? 10000; // 10s cooldown to protect Gemini rate limits
   }
 
   setSession(sessionId: string | null, mode: SessionMode = 'mock-interview'): void {
@@ -31,6 +36,8 @@ export class SuggestionService {
       this.currentMode = mode;
       this.accumulatedSegments = [];
       this.suggestionCounter = 0;
+      this.lastQueryTimestamp = 0;
+      this.lastQueriedText = '';
       if (this.debounceTimer) {
         clearTimeout(this.debounceTimer);
         this.debounceTimer = null;
@@ -44,7 +51,7 @@ export class SuggestionService {
 
     this.accumulatedSegments.push(segment);
 
-    // Debounce to allow full speaker thoughts before querying suggestions
+    // Debounce to allow speaker thoughts to stabilize before querying
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
     }
@@ -57,18 +64,34 @@ export class SuggestionService {
   private async generateSuggestion(): Promise<void> {
     if (this.isProcessing || !this.activeSessionId || this.accumulatedSegments.length === 0) return;
 
+    const now = Date.now();
+    if (now - this.lastQueryTimestamp < this.minIntervalMs) {
+      // Re-schedule for when cooldown elapses so updates aren't lost
+      const waitMs = this.minIntervalMs - (now - this.lastQueryTimestamp) + 200;
+      if (!this.debounceTimer) {
+        this.debounceTimer = setTimeout(() => {
+          this.debounceTimer = null;
+          void this.generateSuggestion();
+        }, waitMs);
+      }
+      return;
+    }
+
+    const recentText = this.accumulatedSegments
+      .slice(-5)
+      .map((s) => s.text)
+      .join(' ')
+      .trim();
+
+    if (recentText.length < 15 || recentText === this.lastQueriedText) {
+      return;
+    }
+
     this.isProcessing = true;
+    this.lastQueryTimestamp = now;
+    this.lastQueriedText = recentText;
 
     try {
-      const recentText = this.accumulatedSegments
-        .slice(-5)
-        .map((s) => s.text)
-        .join(' ');
-
-      if (recentText.trim().length < 15) {
-        return;
-      }
-
       const apiKey = this.settingsService.getEffectiveGeminiKey();
       if (apiKey) {
         await this.queryGemini(apiKey, recentText);
@@ -76,7 +99,9 @@ export class SuggestionService {
         this.generateHeuristicSuggestion(recentText);
       }
     } catch (err) {
-      console.warn('[SuggestionService] Suggestion generation error', err);
+      console.warn('[SuggestionService] Falling back to heuristic suggestions:', err);
+      // Fallback ensures UI provides helpful context even during network interruptions or rate limits
+      this.generateHeuristicSuggestion(recentText);
     } finally {
       this.isProcessing = false;
     }
@@ -112,7 +137,7 @@ Return ONLY a valid JSON object with the following schema:
     });
 
     if (!response.ok) {
-      throw new Error(`Gemini API error: ${response.status} ${response.statusText}`);
+      throw new Error(`Gemini API error ${response.status}: ${response.statusText}`);
     }
 
     const data = (await response.json()) as {

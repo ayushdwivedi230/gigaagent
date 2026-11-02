@@ -1,11 +1,12 @@
 import type {
-  AppSettings,
+  ClientSettings,
   Result,
   SessionDetail,
   SessionEvent,
   SessionSnapshot,
   SessionSummary,
   StartSessionRequest,
+  UpdateSettingsRequest,
 } from './types';
 
 /** Channel names. Only runtime export of this module so the sandboxed preload stays tiny. */
@@ -39,8 +40,8 @@ export interface MeetingAssistantApi {
     clear(): Promise<Result<{ deleted: number }>>;
   };
   settings: {
-    get(): Promise<Result<AppSettings>>;
-    save(settings: Partial<AppSettings>): Promise<Result<AppSettings>>;
+    get(): Promise<Result<ClientSettings>>;
+    save(settings: UpdateSettingsRequest): Promise<Result<ClientSettings>>;
   };
   audio: {
     sendChunk(buffer: ArrayBuffer): void;

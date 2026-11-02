@@ -39,3 +39,4 @@ test('MicrophoneTranscriptSource starts and processes voice audio chunks', async
 
   await source.stop();
 });
+

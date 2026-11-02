@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AppSettings } from '@shared/types';
+import type { AppSettings, ClientSettings, UpdateSettingsRequest } from '@shared/types';
 
 export interface SettingsStorageAdapter {
   isEncryptionAvailable(): boolean;
@@ -23,17 +23,43 @@ export class SettingsService {
     return { ...this.cached };
   }
 
-  saveSettings(updates: Partial<AppSettings>): AppSettings {
-    this.cached = {
-      ...this.cached,
-      ...updates,
+  getClientSettings(): ClientSettings {
+    const effectiveStt = this.getEffectiveSttKey();
+    const effectiveGemini = this.getEffectiveGeminiKey();
+
+    const mask = (key?: string): string | undefined => {
+      if (!key) return undefined;
+      const trimmed = key.trim();
+      if (!trimmed) return undefined;
+      if (trimmed.length <= 4) return '••••';
+      return `••••••••${trimmed.slice(-4)}`;
     };
+
+    return {
+      sttProvider: this.cached.sttProvider,
+      hasSttKey: Boolean(effectiveStt && effectiveStt.trim().length > 0),
+      hasGeminiKey: Boolean(effectiveGemini && effectiveGemini.trim().length > 0),
+      maskedSttKey: mask(effectiveStt),
+      maskedGeminiKey: mask(effectiveGemini),
+    };
+  }
+
+  saveSettings(updates: UpdateSettingsRequest): ClientSettings {
+    if (updates.sttProvider) {
+      this.cached.sttProvider = updates.sttProvider;
+    }
+    if (updates.sttApiKey !== undefined) {
+      this.cached.sttApiKey = updates.sttApiKey.trim();
+    }
+    if (updates.geminiApiKey !== undefined) {
+      this.cached.geminiApiKey = updates.geminiApiKey.trim();
+    }
 
     if (this.filePath) {
       this.persist();
     }
 
-    return { ...this.cached };
+    return this.getClientSettings();
   }
 
   getEffectiveSttKey(): string | undefined {
@@ -121,3 +147,4 @@ export class SettingsService {
     }
   }
 }
+

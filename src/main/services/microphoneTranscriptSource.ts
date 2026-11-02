@@ -30,6 +30,7 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
   private mockVoiceActive = false;
   private mockWordIndex = 0;
   private mockTimer: ReturnType<typeof setInterval> | null = null;
+  private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: MicrophoneSourceOptions) {
     this.settingsService = options.settingsService;
@@ -98,13 +99,24 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
 
   private connectDeepgram(apiKey: string): void {
     try {
+      const cleanKey = apiKey.trim();
       const url =
         'wss://api.deepgram.com/v1/listen?encoding=linear16&sample_rate=16000&channels=1&interim_results=true&smart_format=true&model=nova-2';
 
       // Deepgram allows authentication via WebSocket subprotocol ['token', apiKey]
       // which is supported in standard WebSockets
-      const ws = new WebSocket(url, ['token', apiKey]);
+      const ws = new WebSocket(url, ['token', cleanKey]);
       this.ws = ws;
+
+      // Start Deepgram keep-alive ping to prevent idle connection timeout
+      if (this.keepAliveTimer) clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = setInterval(() => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          try {
+            this.ws.send(JSON.stringify({ type: 'KeepAlive' }));
+          } catch {}
+        }
+      }, 8000);
 
       ws.onopen = () => {
         if (!this.running || this.ws !== ws) return;
@@ -255,6 +267,11 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
     this.running = false;
     this.emitSegment = undefined;
     this.emitError = undefined;
+
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = null;
+    }
 
     if (this.mockTimer) {
       clearInterval(this.mockTimer);

@@ -3,7 +3,7 @@ import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { IPC } from '@shared/ipc';
 import { parseSessionId, parseStartRequest } from '@shared/validation';
 import { err, ok } from '@shared/types';
-import type { AppSettings, Result } from '@shared/types';
+import type { Result, UpdateSettingsRequest } from '@shared/types';
 import type { SessionService } from './services/sessionService';
 import type { SettingsService } from './services/settingsService';
 
@@ -49,12 +49,12 @@ export function registerIpc(
   });
   handle(IPC.historyClear, () => service.clearHistory());
 
-  handle(IPC.settingsGet, () => ok(settingsService.getSettings()));
+  handle(IPC.settingsGet, () => ok(settingsService.getClientSettings()));
   handle(IPC.settingsSave, (raw) => {
     if (typeof raw !== 'object' || raw === null) {
       return err('INVALID_REQUEST', 'Settings data was malformed.');
     }
-    return ok(settingsService.saveSettings(raw as Partial<AppSettings>));
+    return ok(settingsService.saveSettings(raw as UpdateSettingsRequest));
   });
 
   const onAudioChunk = (event: IpcMainEvent, chunk: unknown): void => {
