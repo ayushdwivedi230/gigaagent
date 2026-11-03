@@ -8,6 +8,7 @@ import type { SessionService } from './services/sessionService';
 import type { SettingsService } from './services/settingsService';
 import type { SystemAudioGate } from './services/systemAudioGate';
 import type { SuggestionService } from './services/suggestionService';
+import { logDiag } from './services/diagnosticsLogger';
 
 /**
  * Registers request/response handlers and forwards service events to the window.
@@ -75,6 +76,46 @@ export function registerIpc(
     return suggestionService
       ? suggestionService.testGeminiConnection(question)
       : err('INTERNAL', 'Suggestion service is unavailable.');
+  });
+
+  handle(IPC.aiAsk, (raw: unknown) => {
+    let question = '';
+    let options: {
+      mode?: import('@shared/types').SessionMode;
+      context?: string;
+      formatType?: string;
+    } = {};
+
+    if (typeof raw === 'string') {
+      question = raw.trim();
+    } else if (raw && typeof raw === 'object' && 'question' in raw) {
+      const payload = raw as {
+        question: unknown;
+        options?: {
+          mode?: import('@shared/types').SessionMode;
+          context?: string;
+          formatType?: string;
+        };
+      };
+      question = typeof payload.question === 'string' ? payload.question.trim() : '';
+      if (payload.options && typeof payload.options === 'object') {
+        options = payload.options;
+      }
+    }
+
+    if (!question) {
+      return err('INVALID_REQUEST', 'Question cannot be empty.');
+    }
+
+    return suggestionService
+      ? suggestionService.askQuestion(question, options)
+      : err('INTERNAL', 'Suggestion service is unavailable.');
+  });
+
+  ipcMain.on(IPC.diagLog, (_event, category: unknown, message: unknown, data: unknown) => {
+    if (typeof category === 'string' && typeof message === 'string') {
+      logDiag(category, message, data && typeof data === 'object' ? (data as Record<string, unknown>) : undefined);
+    }
   });
 
   const onAudioChunk = (

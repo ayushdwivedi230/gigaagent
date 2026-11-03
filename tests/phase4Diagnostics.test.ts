@@ -107,3 +107,48 @@ test('SuggestionService testGeminiConnection returns clear error when key is mis
   assert.match(result.error.message, /No Gemini API key is configured/i);
 });
 
+test('SuggestionService askQuestion returns clear error when key is missing', async () => {
+  const settingsService = new SettingsService(null, null);
+  const service = new SuggestionService({
+    settingsService,
+    onSuggestion: () => {},
+  });
+
+  const result = await service.askQuestion('What is Raft consensus?');
+  assert.equal(result.ok, false);
+  assert.match(result.error.message, /No Gemini API key is configured/i);
+});
+
+test('SystemAudioGate accepts frame match via frameTreeNodeId', () => {
+  const gate = new SystemAudioGate(1000);
+  gate.arm();
+
+  const mockWindow = {
+    isDestroyed: () => false,
+    webContents: {
+      mainFrame: { frameTreeNodeId: 42, processId: 10, routingId: 20 },
+    },
+  } as any;
+
+  // Frame is a distinct object instance with matching frameTreeNodeId
+  const separateFrameInstance = {
+    frameTreeNodeId: 42,
+    processId: 10,
+    routingId: 20,
+  };
+
+  const valid = gate.validateRequest(
+    {
+      frame: { top: separateFrameInstance },
+      securityOrigin: 'http://localhost:5173',
+      userGesture: true,
+      videoRequested: true,
+      audioRequested: true,
+    },
+    mockWindow,
+  );
+
+  assert.equal(valid.valid, true);
+  assert.equal(gate.isArmed(), false);
+});
+

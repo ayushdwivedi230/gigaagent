@@ -91,32 +91,52 @@ function titleFor(snapshot: SessionSnapshot): string {
   return `${snapshot.status === 'starting' ? 'Starting' : 'Stopping'}… — ${APP_NAME}`;
 }
 
-/** Deny permissions by default, but permit audio-only microphone access and authenticated display media capture. */
+/** Deny permissions by default, but permit audio microphone access and authenticated display media loopback capture. */
 function configurePermissions(win: BrowserWindow): void {
   const ses = electronSession.defaultSession;
   ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    logDiag('SysAudioDiag:00-PermissionRequest', 'Permission request received', {
+      permission,
+      details,
+      isMainWindow: webContents === win.webContents,
+    });
+
     if (webContents !== win.webContents) {
       return callback(false);
     }
-    const mediaTypes = 'mediaTypes' in details && Array.isArray(details.mediaTypes) ? details.mediaTypes : [];
-    if (
-      permission === 'media' &&
-      mediaTypes.includes('audio') &&
-      !mediaTypes.includes('video')
-    ) {
+
+    // Permit display-capture for getDisplayMedia loopback capture
+    if (permission === 'display-capture') {
       return callback(true);
     }
+
+    // Permit media (microphone audio and display-media video/audio)
+    if (permission === 'media') {
+      const mediaTypes = 'mediaTypes' in details && Array.isArray(details.mediaTypes) ? details.mediaTypes : [];
+      if (mediaTypes.includes('audio') || mediaTypes.includes('video')) {
+        return callback(true);
+      }
+    }
+
     callback(false);
   });
 
-  ses.setPermissionCheckHandler((webContents, permission, _origin, details) => {
+  ses.setPermissionCheckHandler((webContents, permission, origin, details) => {
+    logDiag('SysAudioDiag:00-PermissionCheck', 'Permission check received', {
+      permission,
+      origin,
+      details,
+      isMainWindow: webContents === win.webContents,
+    });
+
     if (webContents !== win.webContents) {
       return false;
     }
-    const mediaType = 'mediaType' in details ? details.mediaType : undefined;
-    if (permission === 'media' && mediaType === 'audio') {
+
+    if ((permission as string) === 'display-capture' || permission === 'media') {
       return true;
     }
+
     return false;
   });
 

@@ -29,6 +29,10 @@ export interface AssistantState {
   history: SessionSummary[];
   liveSegments: TranscriptSegment[];
   suggestions: SuggestionItem[];
+  activeAnswer: SuggestionItem | null;
+  isGeneratingAnswer: boolean;
+  autoAnswer: boolean;
+  setAutoAnswer: (val: boolean) => void;
   viewing: SessionDetail | null;
   error: string | null;
   settings: ClientSettings | null;
@@ -38,10 +42,16 @@ export interface AssistantState {
   closeView: () => void;
   remove: (id: string) => Promise<void>;
   clearAll: () => Promise<void>;
+  clearLiveSegments: () => void;
+  clearAnswer: () => void;
   dismissError: () => void;
   loadSettings: () => Promise<void>;
   saveSettings: (updates: UpdateSettingsRequest) => Promise<void>;
   testGemini: (question?: string) => Promise<SuggestionItem | undefined>;
+  askAi: (
+    question: string,
+    options?: { mode?: SessionMode; context?: string; formatType?: string },
+  ) => Promise<SuggestionItem | undefined>;
 }
 
 export function useAssistant(): AssistantState {
@@ -49,6 +59,9 @@ export function useAssistant(): AssistantState {
   const [history, setHistory] = useState<SessionSummary[]>([]);
   const [liveSegments, setLiveSegments] = useState<TranscriptSegment[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
+  const [activeAnswer, setActiveAnswer] = useState<SuggestionItem | null>(null);
+  const [isGeneratingAnswer, setIsGeneratingAnswer] = useState(false);
+  const [autoAnswer, setAutoAnswer] = useState(true);
   const [viewing, setViewing] = useState<SessionDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<ClientSettings | null>(null);
@@ -119,6 +132,13 @@ export function useAssistant(): AssistantState {
           break;
         case 'suggestion':
           setSuggestions((prev) => [event.suggestion, ...prev]);
+          if (
+            event.suggestion.type === 'answer_tip' ||
+            event.suggestion.isQuestion ||
+            event.suggestion.source === 'gemini'
+          ) {
+            setActiveAnswer(event.suggestion);
+          }
           break;
         case 'error':
           setError(event.error.message);
@@ -262,7 +282,38 @@ export function useAssistant(): AssistantState {
         setError(DESKTOP_REQUIRED_ERROR);
         return undefined;
       }
-      return await call(api.gemini.test(question));
+      setIsGeneratingAnswer(true);
+      try {
+        const res = await call(api.gemini.test(question));
+        if (res) setActiveAnswer(res);
+        return res;
+      } finally {
+        setIsGeneratingAnswer(false);
+      }
+    },
+    [call],
+  );
+
+  const askAi = useCallback(
+    async (
+      question: string,
+      options?: { mode?: SessionMode; context?: string; formatType?: string },
+    ) => {
+      if (!api) {
+        setError(DESKTOP_REQUIRED_ERROR);
+        return undefined;
+      }
+      setIsGeneratingAnswer(true);
+      try {
+        const item = await call(api.ai.ask(question, options));
+        if (item) {
+          setActiveAnswer(item);
+          return item;
+        }
+      } finally {
+        setIsGeneratingAnswer(false);
+      }
+      return undefined;
     },
     [call],
   );
@@ -272,6 +323,10 @@ export function useAssistant(): AssistantState {
     history,
     liveSegments,
     suggestions,
+    activeAnswer,
+    isGeneratingAnswer,
+    autoAnswer,
+    setAutoAnswer,
     viewing,
     error,
     settings,
@@ -281,9 +336,12 @@ export function useAssistant(): AssistantState {
     closeView: () => setViewing(null),
     remove,
     clearAll,
+    clearLiveSegments: () => setLiveSegments([]),
+    clearAnswer: () => setActiveAnswer(null),
     dismissError: () => setError(null),
     loadSettings,
     saveSettings,
     testGemini,
+    askAi,
   };
 }

@@ -82,8 +82,29 @@ export class SystemAudioGate {
       return { valid: false, reason };
     }
 
-    const topFrame = request.frame?.top;
-    if (!topFrame || topFrame !== mainWindow.webContents.mainFrame) {
+    const candidateFrame = request.frame?.top ?? request.frame;
+    const mainFrame = mainWindow.webContents?.mainFrame as {
+      frameTreeNodeId?: number;
+      processId?: number;
+      routingId?: number;
+    } | null;
+    const reqFrame = candidateFrame as {
+      frameTreeNodeId?: number;
+      processId?: number;
+      routingId?: number;
+    } | null;
+
+    const isFrameMatch =
+      candidateFrame === mainWindow.webContents.mainFrame ||
+      (reqFrame &&
+        mainFrame &&
+        ((typeof reqFrame.frameTreeNodeId === 'number' &&
+          reqFrame.frameTreeNodeId === mainFrame.frameTreeNodeId) ||
+          (typeof reqFrame.processId === 'number' &&
+            reqFrame.processId === mainFrame.processId &&
+            reqFrame.routingId === mainFrame.routingId)));
+
+    if (!candidateFrame || !isFrameMatch) {
       const reason = 'Requesting frame is not the authenticated main window frame';
       logDiag('SysAudioDiag:03-GateValidation', 'Validation FAILED', { reason });
       return { valid: false, reason };

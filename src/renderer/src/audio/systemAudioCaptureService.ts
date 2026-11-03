@@ -35,17 +35,17 @@ export class SystemAudioCaptureService {
       }
 
       // 1. Arm the main process gate right before user gesture prompts the capture
-      console.log('[SysAudioDiag:01-Gate] Requesting main process to arm gate...');
+      window.api?.diag?.log('SysAudioDiag:01-Gate', 'Renderer requesting main process to arm gate...');
       if (window.api?.systemAudio) {
         const armResult = await window.api.systemAudio.arm();
         if (!armResult.ok) {
           throw new Error('Failed to authorize system audio capture with main process.');
         }
-        console.log('[SysAudioDiag:01-Gate] Main process gate successfully armed');
+        window.api?.diag?.log('SysAudioDiag:01-Gate', 'Main process gate confirmed armed by renderer');
       }
 
       // 2. Request display media with loopback audio.
-      console.log('[SysAudioDiag:02-DisplayMedia] Calling navigator.mediaDevices.getDisplayMedia...');
+      window.api?.diag?.log('SysAudioDiag:02-DisplayMedia', 'Renderer calling navigator.mediaDevices.getDisplayMedia...');
       this.mediaStream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
         audio: {
@@ -55,7 +55,7 @@ export class SystemAudioCaptureService {
         },
       });
 
-      console.log('[SysAudioDiag:05-StreamAcquisition] getDisplayMedia resolved', {
+      window.api?.diag?.log('SysAudioDiag:05-StreamAcquisition', 'getDisplayMedia resolved', {
         streamId: this.mediaStream.id,
         videoTracks: this.mediaStream.getVideoTracks().length,
         audioTracks: this.mediaStream.getAudioTracks().length,
@@ -169,6 +169,13 @@ export class SystemAudioCaptureService {
       console.log('[SysAudioDiag:08-Worklet] AudioWorklet pipeline fully wired and capturing PCM chunks');
     } catch (err) {
       this.stop();
+      const errName = err instanceof DOMException ? err.name : (err instanceof Error ? err.name : 'UnknownError');
+      const errMsg = err instanceof Error ? err.message : String(err);
+      window.api?.diag?.log('SysAudioDiag:RendererError', 'System audio capture startup failed', {
+        name: errName,
+        message: errMsg,
+      });
+
       if (
         err instanceof DOMException &&
         (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')

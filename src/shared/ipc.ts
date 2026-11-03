@@ -25,6 +25,8 @@ export const IPC = {
   systemAudioDisarm: 'system-audio:disarm',
   audioChunk: 'audio:chunk',
   geminiTest: 'gemini:test',
+  aiAsk: 'ai:ask',
+  diagLog: 'diag:log',
   event: 'session:event',
   windowMinimize: 'window:minimize',
   windowClose: 'window:close',
@@ -56,6 +58,19 @@ export interface MeetingAssistantApi {
   };
   gemini: {
     test(question?: string): Promise<Result<SuggestionItem>>;
+  };
+  ai: {
+    ask(
+      question: string,
+      options?: {
+        mode?: import('./types').SessionMode;
+        context?: string;
+        formatType?: string;
+      },
+    ): Promise<Result<SuggestionItem>>;
+  };
+  diag: {
+    log(category: string, message: string, data?: Record<string, unknown>): void;
   };
   /** Frameless window controls. */
   window: {

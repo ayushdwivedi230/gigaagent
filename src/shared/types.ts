@@ -1,12 +1,13 @@
 // Types and tiny helpers shared by main, preload and renderer.
 // Keep this file free of Node/Electron/DOM imports so every process can use it.
 
-export const SESSION_MODES = ['mock-interview', 'meeting', 'study'] as const;
+export const SESSION_MODES = ['mock-interview', 'meeting', 'general', 'study'] as const;
 export type SessionMode = (typeof SESSION_MODES)[number];
 
 export const MODE_LABELS: Record<SessionMode, string> = {
   'mock-interview': 'Mock interview',
   meeting: 'Meeting',
+  general: 'General copilot',
   study: 'Study session',
 };
 
@@ -37,6 +38,9 @@ export interface SuggestionItem {
   content: string;
   source?: 'gemini' | 'heuristic' | 'test';
   isQuestion?: boolean;
+  question?: string;
+  formatType?: 'direct' | 'technical' | 'interview' | 'star' | 'followup' | 'meeting' | 'points';
+  modelUsed?: string;
 }
 
 export interface AppSettings {

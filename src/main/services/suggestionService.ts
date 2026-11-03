@@ -235,7 +235,120 @@ Return ONLY a valid JSON object matching this schema:
         content: parsed.content,
         source: 'gemini',
         isQuestion: intent.isQuestion,
+        question: intent.questionText || undefined,
+        formatType: isInterview ? 'interview' : 'technical',
+        modelUsed,
       });
+    }
+  }
+
+  /**
+   * One-click or manual Ask AI functionality.
+   * Generates a direct, highly structured response using the user's question,
+   * active mode, and recent conversation context.
+   */
+  async askQuestion(
+    question: string,
+    options?: {
+      mode?: SessionMode;
+      context?: string;
+      formatType?: string;
+    },
+  ): Promise<Result<SuggestionItem>> {
+    const apiKey = this.settingsService.getEffectiveGeminiKey();
+    if (!apiKey) {
+      return {
+        ok: false,
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'No Gemini API key is configured. Please enter your Gemini API Key in Settings.',
+        },
+      };
+    }
+
+    const mode = options?.mode ?? this.currentMode ?? 'mock-interview';
+    const recentContext =
+      options?.context ??
+      this.accumulatedSegments
+        .slice(-6)
+        .map((s) => `${s.speaker === 'system' ? 'Meeting/Interviewer' : 'You'}: ${s.text}`)
+        .join('\n')
+        .trim();
+
+    logDiag('AIDiag:AskAi', 'Executing Ask AI query', { question, mode, hasContext: Boolean(recentContext) });
+
+    let modeInstruction = '';
+    if (mode === 'mock-interview') {
+      modeInstruction = `Role: Technical Interview Candidate Copilot.
+Provide a high-scoring, articulate response:
+1. Direct Answer (1-2 sentences delivering the core concept immediately).
+2. Key Points / STAR Breakdown (3-4 crisp bullet points detailing mechanism, implementation, or trade-offs).
+3. Edge Case / Pro-Tip (1 sentence on production considerations or best practices).`;
+    } else if (mode === 'meeting') {
+      modeInstruction = `Role: Strategic Meeting Copilot.
+Provide a concise, high-impact contribution:
+1. Executive Summary / Position (1-2 clear sentences).
+2. Key Talking Points & Action Items (3-4 crisp bullets).
+3. Strategic Considerations (Key risks or next steps).`;
+    } else {
+      modeInstruction = `Role: Expert Technical Copilot.
+Provide an authoritative, clear breakdown:
+1. Core Explanation (1-2 sentences summarizing the concept).
+2. Key Differences / Bulleted Details (3-4 concise points).
+3. Practical Takeaway or Example.`;
+    }
+
+    const systemPrompt = `${modeInstruction}
+
+${recentContext ? `Recent Conversation Context:\n${recentContext}\n` : ''}
+Question / Prompt:
+"${question}"
+
+Return ONLY a valid JSON object matching this schema:
+{
+  "title": "Concise topic title (under 40 chars)",
+  "formatType": "technical",
+  "content": "Full formatted response using standard Markdown (bullet points, bold highlights, concise paragraphs). Keep it under 600 characters so it can be read in 20 seconds."
+}`;
+
+    try {
+      const { text, modelUsed } = await this.dispatchGeminiRequest(apiKey, systemPrompt);
+      const parsed = this.parseGeminiJson(text);
+
+      const item: SuggestionItem = {
+        id: `ask_${Date.now()}_${++this.suggestionCounter}`,
+        sessionId: this.activeSessionId || 'manual_query',
+        createdAt: new Date().toISOString(),
+        type: 'answer_tip',
+        title: parsed.title || 'AI Answer',
+        content: parsed.content || text,
+        source: 'gemini',
+        isQuestion: true,
+        question,
+        formatType:
+          (parsed.formatType as any) ||
+          (mode === 'mock-interview' ? 'interview' : mode === 'meeting' ? 'meeting' : 'technical'),
+        modelUsed,
+      };
+
+      logDiag('AIDiag:AskAi', 'Ask AI query completed successfully', {
+        id: item.id,
+        modelUsed,
+        title: item.title,
+      });
+
+      this.emit(item);
+      return { ok: true, value: item };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logDiag('AIDiag:AskAi', 'Ask AI query failed', { error: errMsg });
+      return {
+        ok: false,
+        error: {
+          code: 'SOURCE_FAILED',
+          message: `AI generation failed: ${errMsg}`,
+        },
+      };
     }
   }
 
@@ -385,6 +498,7 @@ Return ONLY a valid JSON object matching this schema:
     type?: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
     title?: string;
     content?: string;
+    formatType?: string;
   } {
     try {
       const cleaned = rawText
@@ -395,6 +509,7 @@ Return ONLY a valid JSON object matching this schema:
         type?: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
         title?: string;
         content?: string;
+        formatType?: string;
       };
     } catch {
       // Extract first JSON block if surrounded by explanatory text
@@ -405,6 +520,7 @@ Return ONLY a valid JSON object matching this schema:
             type?: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
             title?: string;
             content?: string;
+            formatType?: string;
           };
         } catch {}
       }
@@ -488,13 +604,30 @@ Return ONLY a valid JSON object matching this schema:
     });
   }
 
-  private emit(item: {
-    type: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
-    title: string;
-    content: string;
-    source?: 'gemini' | 'heuristic' | 'test';
-    isQuestion?: boolean;
-  }): void {
+  private emit(
+    item:
+      | SuggestionItem
+      | {
+          type: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
+          title: string;
+          content: string;
+          source?: 'gemini' | 'heuristic' | 'test';
+          isQuestion?: boolean;
+          question?: string;
+          formatType?: 'direct' | 'technical' | 'interview' | 'star' | 'followup' | 'meeting' | 'points';
+          modelUsed?: string;
+        },
+  ): void {
+    if ('sessionId' in item && 'id' in item) {
+      logDiag('AIDiag:07-Delivery', 'Emitting pre-formed suggestion to UI and session store', {
+        id: item.id,
+        title: item.title,
+        source: item.source,
+      });
+      this.onSuggestion(item as SuggestionItem);
+      return;
+    }
+
     if (!this.activeSessionId) return;
 
     const suggestion: SuggestionItem = {
@@ -506,6 +639,9 @@ Return ONLY a valid JSON object matching this schema:
       content: item.content,
       source: item.source || 'gemini',
       isQuestion: item.isQuestion,
+      question: item.question,
+      formatType: item.formatType,
+      modelUsed: item.modelUsed,
     };
 
     logDiag('AIDiag:07-Delivery', 'Emitting suggestion to UI and session store', {

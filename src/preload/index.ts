@@ -33,6 +33,14 @@ const api: MeetingAssistantApi = {
   gemini: {
     test: (question) => ipcRenderer.invoke(IPC.geminiTest, question),
   },
+  ai: {
+    ask: (question, options) => ipcRenderer.invoke(IPC.aiAsk, { question, options }),
+  },
+  diag: {
+    log: (category, message, data) => {
+      ipcRenderer.send(IPC.diagLog, category, message, data);
+    },
+  },
   window: {
     minimize: () => { void ipcRenderer.invoke(IPC.windowMinimize); },
     close: () => { void ipcRenderer.invoke(IPC.windowClose); },
