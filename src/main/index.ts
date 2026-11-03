@@ -105,17 +105,9 @@ function configurePermissions(win: BrowserWindow): void {
       return callback(false);
     }
 
-    // Permit display-capture for getDisplayMedia loopback capture
-    if (permission === 'display-capture') {
+    // Permit media and display-capture for authenticated main window
+    if (permission === 'media' || (permission as string) === 'display-capture') {
       return callback(true);
-    }
-
-    // Permit media (microphone audio and display-media video/audio)
-    if (permission === 'media') {
-      const mediaTypes = 'mediaTypes' in details && Array.isArray(details.mediaTypes) ? details.mediaTypes : [];
-      if (mediaTypes.includes('audio') || mediaTypes.includes('video')) {
-        return callback(true);
-      }
     }
 
     callback(false);
