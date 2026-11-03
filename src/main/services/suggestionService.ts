@@ -206,58 +206,24 @@ Return ONLY a valid JSON object matching this schema:
   "content": "Actionable, concrete talking points or direct answer (2-4 clear sentences with technical depth, under 300 chars)"
 }`;
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
-
-    logDiag('AIDiag:04-Request', 'Dispatching request to Gemini 1.5 Flash', {
-      model: 'gemini-1.5-flash',
+    logDiag('AIDiag:04-Request', 'Dispatching request to Gemini API', {
       isQuestion: intent.isQuestion,
     });
 
     const startTime = Date.now();
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: systemPrompt }] }],
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 1024,
-          responseMimeType: 'application/json',
-        },
-      }),
-    });
-
+    const { text: rawText, modelUsed } = await this.dispatchGeminiRequest(apiKey, systemPrompt);
     const latencyMs = Date.now() - startTime;
 
-    if (!response.ok) {
-      const errBody = await response.text().catch(() => '');
-      throw new Error(`Gemini API HTTP ${response.status} (${response.statusText}): ${errBody.slice(0, 150)}`);
-    }
-
-    const data = (await response.json()) as {
-      candidates?: Array<{
-        content?: {
-          parts?: Array<{ text?: string }>;
-        };
-      }>;
-    };
-
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
     logDiag('AIDiag:05-Response', 'Gemini response received', {
+      modelUsed,
       latencyMs,
       hasText: Boolean(rawText),
       preview: rawText?.slice(0, 80),
     });
 
-    if (!rawText) {
-      throw new Error('Gemini returned empty candidate content');
-    }
-
     const parsed = this.parseGeminiJson(rawText);
     logDiag('AIDiag:06-Parse', 'Parsed Gemini JSON output', {
+      modelUsed,
       type: parsed.type,
       title: parsed.title,
     });
@@ -271,6 +237,85 @@ Return ONLY a valid JSON object matching this schema:
         isQuestion: intent.isQuestion,
       });
     }
+  }
+
+  /**
+   * Dispatches generateContent request with automatic fallback across supported model versions
+   * (e.g. gemini-flash-lite-latest -> gemini-3.5-flash-lite -> gemini-flash-latest -> gemini-3.8-flash)
+   * to guard against model deprecations and temporary demand spikes.
+   */
+  private async dispatchGeminiRequest(
+    apiKey: string,
+    prompt: string,
+  ): Promise<{ text: string; modelUsed: string }> {
+    const candidateModels = [
+      'gemini-flash-lite-latest',
+      'gemini-3.5-flash-lite',
+      'gemini-flash-latest',
+      'gemini-3.8-flash',
+    ];
+    let lastError: Error | null = null;
+
+    for (const model of candidateModels) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.3,
+              maxOutputTokens: 1024,
+              responseMimeType: 'application/json',
+            },
+          }),
+        });
+
+        if (response.status === 404 || response.status === 503 || response.status === 429) {
+          const errBody = await response.text().catch(() => '');
+          logDiag('AIDiag:ModelFallback', `Model ${model} returned HTTP ${response.status}, trying next candidate...`, {
+            model,
+            status: response.status,
+            details: errBody.slice(0, 100),
+          });
+          lastError = new Error(`Model ${model} returned HTTP ${response.status}: ${errBody.slice(0, 100)}`);
+          continue;
+        }
+
+        if (!response.ok) {
+          const errBody = await response.text().catch(() => '');
+          throw new Error(`Gemini HTTP ${response.status} (${response.statusText}): ${errBody.slice(0, 150)}`);
+        }
+
+        const data = (await response.json()) as {
+          candidates?: Array<{
+            content?: {
+              parts?: Array<{ text?: string }>;
+            };
+          }>;
+        };
+
+        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!rawText) {
+          throw new Error(`Gemini returned empty candidate content for ${model}`);
+        }
+
+        return { text: rawText, modelUsed: model };
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        const msg = lastError.message;
+        if (msg.includes('404') || msg.includes('503') || msg.includes('429')) {
+          continue;
+        }
+        throw lastError;
+      }
+    }
+
+    throw lastError || new Error('No supported Gemini model found on endpoints.');
   }
 
   /**
@@ -304,32 +349,7 @@ Return ONLY a valid JSON object matching this schema:
   "content": "Direct technical answer with 2-3 key talking points (under 280 chars)"
 }`;
 
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: 1024,
-            responseMimeType: 'application/json',
-          },
-        }),
-      });
-
-      if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        throw new Error(`Gemini HTTP ${res.status}: ${body.slice(0, 150)}`);
-      }
-
-      const json = (await res.json()) as {
-        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-      };
-      const text = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const { text, modelUsed } = await this.dispatchGeminiRequest(apiKey, prompt);
       const parsed = this.parseGeminiJson(text);
 
       const item: SuggestionItem = {
@@ -337,13 +357,14 @@ Return ONLY a valid JSON object matching this schema:
         sessionId: this.activeSessionId || 'test_session',
         createdAt: new Date().toISOString(),
         type: 'answer_tip',
-        title: `[Live Test] ${parsed.title || 'Technical Response'}`,
+        title: `[${modelUsed}] ${parsed.title || 'Technical Response'}`,
         content: parsed.content || 'Successfully verified Gemini connection.',
         source: 'gemini',
         isQuestion: true,
       };
 
       logDiag('AIDiag:Test', 'Gemini test query succeeded', {
+        modelUsed,
         title: item.title,
         content: item.content,
       });

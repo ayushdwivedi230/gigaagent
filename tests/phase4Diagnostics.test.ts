@@ -106,3 +106,4 @@ test('SuggestionService testGeminiConnection returns clear error when key is mis
   assert.equal(result.ok, false);
   assert.match(result.error.message, /No Gemini API key is configured/i);
 });
+
