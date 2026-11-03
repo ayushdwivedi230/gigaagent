@@ -124,7 +124,7 @@ export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
               placeholder={
                 settings?.hasGeminiKey
                   ? 'Enter new key to replace existing'
-                  : 'e.g. AIzaSy...'
+                  : 'e.g. AQ.Ab... or AIzaSy...'
               }
               autoComplete="off"
             />
