@@ -1,6 +1,7 @@
 import type { AppError, RawSegment } from '@shared/types';
 import type { TranscriptSource } from './transcriptSource';
 import type { SettingsService } from './settingsService';
+import { createDeepgramSocket, type ISocket } from './deepgramSocket';
 
 export interface MicrophoneSourceOptions {
   settingsService: SettingsService;
@@ -13,7 +14,7 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
   private running = false;
   private emitSegment: ((segment: RawSegment) => void) | undefined;
   private emitError: ((error: AppError) => void) | undefined;
-  private ws: WebSocket | null = null;
+  private ws: ISocket | null = null;
   private readonly settingsService: SettingsService;
   private readonly clock: () => number;
 
@@ -80,13 +81,13 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
 
     // If using real WebSocket connection
     if (this.ws) {
-      if (this.ws.readyState === WebSocket.OPEN) {
+      if (this.ws.readyState === 1) { // 1 = OPEN
         try {
           this.ws.send(chunk);
         } catch (err) {
           console.warn('[MicrophoneTranscriptSource] Failed to send audio chunk', err);
         }
-      } else if (this.ws.readyState === WebSocket.CONNECTING) {
+      } else if (this.ws.readyState === 0) { // 0 = CONNECTING
         // Enforce bounded buffer while connecting
         if (this.pendingBytes + chunk.byteLength <= this.MAX_BUFFER_BYTES) {
           this.pendingChunks.push(chunk);
@@ -112,15 +113,13 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
       const url =
         'wss://api.deepgram.com/v1/listen?encoding=linear16&sample_rate=16000&channels=1&interim_results=true&smart_format=true&model=nova-2';
 
-      // Deepgram allows authentication via WebSocket subprotocol ['token', apiKey]
-      // which is supported in standard WebSockets
-      const ws = new WebSocket(url, ['token', cleanKey]);
+      const ws = createDeepgramSocket(url, cleanKey);
       this.ws = ws;
 
       // Start Deepgram keep-alive ping to prevent idle connection timeout
       if (this.keepAliveTimer) clearInterval(this.keepAliveTimer);
       this.keepAliveTimer = setInterval(() => {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        if (this.ws && this.ws.readyState === 1) {
           try {
             this.ws.send(JSON.stringify({ type: 'KeepAlive' }));
           } catch {}
@@ -139,18 +138,18 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
         this.pendingBytes = 0;
       };
 
-      ws.onmessage = (event: MessageEvent) => {
+      ws.onmessage = (event: { data: string }) => {
         if (!this.running || this.ws !== ws) return;
         try {
-          const data = JSON.parse(event.data as string) as Record<string, unknown>;
+          const data = JSON.parse(event.data) as Record<string, unknown>;
           this.handleDeepgramMessage(data);
         } catch (err) {
           console.warn('[MicrophoneTranscriptSource] Failed to parse STT message', err);
         }
       };
 
-      ws.onerror = (_event) => {
-        console.warn('[MicrophoneTranscriptSource] WebSocket error encountered');
+      ws.onerror = (err) => {
+        console.warn('[MicrophoneTranscriptSource] WebSocket error encountered', err);
       };
 
       ws.onclose = (event) => {
@@ -165,10 +164,11 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
         }
       };
     } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
       console.error('[MicrophoneTranscriptSource] Failed to create WebSocket', err);
       this.emitError?.({
         code: 'SOURCE_FAILED',
-        message: 'Could not connect to Speech-to-Text service. Check network connection.',
+        message: `Could not connect to Speech-to-Text service: ${errMsg}`,
       });
       this.initMockRecognizer();
     }
@@ -291,7 +291,7 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
 
     if (this.ws) {
       try {
-        if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+        if (this.ws.readyState === 1 || this.ws.readyState === 0) {
           this.ws.close(1000, 'Session stopped');
         }
       } catch {}

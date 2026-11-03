@@ -6,6 +6,7 @@ import type {
   SessionSnapshot,
   SessionSummary,
   StartSessionRequest,
+  SuggestionItem,
   UpdateSettingsRequest,
 } from './types';
 
@@ -23,6 +24,7 @@ export const IPC = {
   systemAudioArm: 'system-audio:arm',
   systemAudioDisarm: 'system-audio:disarm',
   audioChunk: 'audio:chunk',
+  geminiTest: 'gemini:test',
   event: 'session:event',
   windowMinimize: 'window:minimize',
   windowClose: 'window:close',
@@ -51,6 +53,9 @@ export interface MeetingAssistantApi {
   };
   audio: {
     sendChunk(source: 'mic' | 'system', buffer: ArrayBuffer): void;
+  };
+  gemini: {
+    test(question?: string): Promise<Result<SuggestionItem>>;
   };
   /** Frameless window controls. */
   window: {

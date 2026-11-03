@@ -259,7 +259,10 @@ export default function App() {
       </div>
 
       {/* ── AI Copilot Suggestions ── */}
-      <SuggestionsPanel suggestions={assistant.suggestions} />
+      <SuggestionsPanel
+        suggestions={assistant.suggestions}
+        onTestGemini={() => void assistant.testGemini()}
+      />
 
       {/* ── Transcript ── */}
       <div className="transcript-area">

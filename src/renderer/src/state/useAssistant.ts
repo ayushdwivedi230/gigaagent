@@ -41,6 +41,7 @@ export interface AssistantState {
   dismissError: () => void;
   loadSettings: () => Promise<void>;
   saveSettings: (updates: UpdateSettingsRequest) => Promise<void>;
+  testGemini: (question?: string) => Promise<SuggestionItem | undefined>;
 }
 
 export function useAssistant(): AssistantState {
@@ -148,7 +149,37 @@ export function useAssistant(): AssistantState {
       }
       setError(null);
 
-      if (source === 'microphone' || source === 'both') {
+      if (source === 'both') {
+        try {
+          await Promise.all([
+            audioCapture.start({
+              onChunk: (buffer) => {
+                api.audio.sendChunk('mic', buffer);
+              },
+              onError: (err) => {
+                setError(err.message);
+              },
+            }),
+            systemAudioCapture.start({
+              onChunk: (buffer) => {
+                api.audio.sendChunk('system', buffer);
+              },
+              onError: (err) => {
+                setError(err.message);
+              },
+            }),
+          ]);
+        } catch (bothErr) {
+          audioCapture.stop();
+          systemAudioCapture.stop();
+          setError(
+            bothErr instanceof Error
+              ? bothErr.message
+              : 'Failed to initialize dual audio capture.',
+          );
+          return;
+        }
+      } else if (source === 'microphone') {
         try {
           await audioCapture.start({
             onChunk: (buffer) => {
@@ -166,9 +197,7 @@ export function useAssistant(): AssistantState {
           );
           return;
         }
-      }
-
-      if (source === 'system' || source === 'both') {
+      } else if (source === 'system') {
         try {
           await systemAudioCapture.start({
             onChunk: (buffer) => {
@@ -179,7 +208,6 @@ export function useAssistant(): AssistantState {
             },
           });
         } catch (sysErr) {
-          audioCapture.stop();
           setError(
             sysErr instanceof Error
               ? sysErr.message
@@ -228,6 +256,17 @@ export function useAssistant(): AssistantState {
     await refreshHistory();
   }, [call, refreshHistory]);
 
+  const testGemini = useCallback(
+    async (question?: string) => {
+      if (!api) {
+        setError(DESKTOP_REQUIRED_ERROR);
+        return undefined;
+      }
+      return await call(api.gemini.test(question));
+    },
+    [call],
+  );
+
   return {
     snapshot,
     history,
@@ -245,5 +284,6 @@ export function useAssistant(): AssistantState {
     dismissError: () => setError(null),
     loadSettings,
     saveSettings,
+    testGemini,
   };
 }

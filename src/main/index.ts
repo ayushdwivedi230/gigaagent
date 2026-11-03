@@ -14,6 +14,7 @@ import { SqliteSessionRepository } from './services/sqliteSessionRepository';
 import { SessionService } from './services/sessionService';
 import { SettingsService } from './services/settingsService';
 import { SuggestionService } from './services/suggestionService';
+import { initDiagnosticsLogger, logDiag } from './services/diagnosticsLogger';
 import type { SessionSnapshot } from '@shared/types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -25,6 +26,8 @@ const systemAudioGate = new SystemAudioGate();
 
 async function initServices(): Promise<void> {
   const userDataDir = app.getPath('userData');
+  initDiagnosticsLogger(userDataDir);
+  logDiag('Lifecycle', 'Initializing services in main process', { userDataDir });
   const settingsPath = path.join(userDataDir, 'settings.json');
   settingsService = new SettingsService(settingsPath, safeStorage);
 
@@ -118,20 +121,33 @@ function configurePermissions(win: BrowserWindow): void {
   });
 
   ses.setDisplayMediaRequestHandler(async (request, callback) => {
+    logDiag('SysAudioDiag:02-DisplayMedia', 'Main process received setDisplayMedia request', {
+      securityOrigin: request.securityOrigin,
+      videoRequested: request.videoRequested,
+      audioRequested: request.audioRequested,
+      userGesture: request.userGesture,
+    });
+
     const validation = systemAudioGate.validateRequest(request, win);
     if (!validation.valid) {
+      logDiag('SysAudioDiag:02-DisplayMedia', 'Capture request REJECTED', { reason: validation.reason });
       console.warn('[DisplayMedia] Capture request denied:', validation.reason);
       return callback({});
     }
 
     const screenSource = await systemAudioGate.selectDesktopSource();
     if (!screenSource) {
+      logDiag('SysAudioDiag:02-DisplayMedia', 'Capture request FAILED: no screen capture source found');
       console.warn('[DisplayMedia] No screen capture source found');
       return callback({});
     }
 
     // Pass loopback audio and primary screen source to Chromium WASAPI loopback.
-    // In the renderer, video tracks are immediately stopped and discarded without rendering.
+    // In the renderer, video tracks are disabled without stopping to preserve audio session.
+    logDiag('SysAudioDiag:04-SourceSelection', 'Returning loopback audio and primary screen source to Chromium', {
+      sourceId: screenSource.id,
+      sourceName: screenSource.name,
+    });
     callback({ video: screenSource, audio: 'loopback' });
   });
 }
@@ -150,7 +166,7 @@ if (!app.requestSingleInstanceLock()) {
     const win = createMainWindow();
     mainWindow = win;
     configurePermissions(win);
-    registerIpc(win, service, settingsService, systemAudioGate);
+    registerIpc(win, service, settingsService, systemAudioGate, suggestionService);
 
     win.on('closed', () => {
       mainWindow = null;

@@ -35,6 +35,8 @@ export interface SuggestionItem {
   type: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
   title: string;
   content: string;
+  source?: 'gemini' | 'heuristic' | 'test';
+  isQuestion?: boolean;
 }
 
 export interface AppSettings {

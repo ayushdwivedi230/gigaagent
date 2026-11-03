@@ -1,11 +1,19 @@
-import type { SessionMode, SuggestionItem, TranscriptSegment } from '@shared/types';
+import type { Result, SessionMode, SuggestionItem, TranscriptSegment } from '@shared/types';
 import type { SettingsService } from './settingsService';
+import { logDiag } from './diagnosticsLogger';
 
 export interface SuggestionServiceOptions {
   settingsService: SettingsService;
   onSuggestion: (suggestion: SuggestionItem) => void;
   debounceMs?: number;
   minIntervalMs?: number;
+}
+
+export interface DetectedIntent {
+  isQuestion: boolean;
+  questionText: string;
+  speaker: 'user' | 'system';
+  topic: string;
 }
 
 export class SuggestionService {
@@ -26,8 +34,8 @@ export class SuggestionService {
   constructor(options: SuggestionServiceOptions) {
     this.settingsService = options.settingsService;
     this.onSuggestion = options.onSuggestion;
-    this.debounceMs = options.debounceMs ?? 2500;
-    this.minIntervalMs = options.minIntervalMs ?? 10000; // 10s cooldown to protect Gemini rate limits
+    this.debounceMs = options.debounceMs ?? 2000;
+    this.minIntervalMs = options.minIntervalMs ?? 6000; // 6s cooldown for faster response while respecting quota
   }
 
   setSession(sessionId: string | null, mode: SessionMode = 'mock-interview'): void {
@@ -42,6 +50,10 @@ export class SuggestionService {
         clearTimeout(this.debounceTimer);
         this.debounceTimer = null;
       }
+      logDiag('AIDiag:01-Session', 'Active session updated in SuggestionService', {
+        sessionId,
+        mode,
+      });
     }
   }
 
@@ -51,14 +63,59 @@ export class SuggestionService {
 
     this.accumulatedSegments.push(segment);
 
-    // Debounce to allow speaker thoughts to stabilize before querying
+    const intent = this.detectQuestionAndIntent([segment]);
+    logDiag('AIDiag:01-Segment', 'Final segment received', {
+      segmentId: segment.id,
+      speaker: segment.speaker,
+      text: segment.text,
+      isQuestion: intent.isQuestion,
+    });
+
+    // If an interviewer/system participant asks a question, shorten debounce for instant copilot assistance
+    const delay = intent.isQuestion && segment.speaker === 'system' ? 800 : this.debounceMs;
+
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
     }
 
     this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = null;
       void this.generateSuggestion();
-    }, this.debounceMs);
+    }, delay);
+  }
+
+  /**
+   * Identifies questions, technical interview inquiries, and key intents from recent utterances.
+   */
+  detectQuestionAndIntent(segments: TranscriptSegment[]): DetectedIntent {
+    if (segments.length === 0) {
+      return { isQuestion: false, questionText: '', speaker: 'user', topic: 'general' };
+    }
+
+    const last = segments[segments.length - 1]!;
+    const combined = segments
+      .slice(-3)
+      .map((s) => s.text)
+      .join(' ')
+      .trim();
+
+    const questionPatterns = [
+      /\?$/,
+      /\b(how|what|why|when|where|who|which)\b/i,
+      /\b(can you|could you|would you|explain|describe|tell me about|walk me through)\b/i,
+      /\b(difference between|trade-offs? between|compare|pros and cons)\b/i,
+      /\b(how do you|how would you|what is the best way to)\b/i,
+    ];
+
+    const isQuestion =
+      last.speaker === 'system' || questionPatterns.some((pattern) => pattern.test(combined));
+
+    return {
+      isQuestion,
+      questionText: isQuestion ? combined : '',
+      speaker: last.speaker,
+      topic: this.currentMode,
+    };
   }
 
   private async generateSuggestion(): Promise<void> {
@@ -66,7 +123,6 @@ export class SuggestionService {
 
     const now = Date.now();
     if (now - this.lastQueryTimestamp < this.minIntervalMs) {
-      // Re-schedule for when cooldown elapses so updates aren't lost
       const waitMs = this.minIntervalMs - (now - this.lastQueryTimestamp) + 200;
       if (!this.debounceTimer) {
         this.debounceTimer = setTimeout(() => {
@@ -77,10 +133,10 @@ export class SuggestionService {
       return;
     }
 
-    const recentText = this.accumulatedSegments
-      .slice(-5)
-      .map((s) => s.text)
-      .join(' ')
+    const recentSegments = this.accumulatedSegments.slice(-6);
+    const recentText = recentSegments
+      .map((s) => `${s.speaker === 'system' ? '[Interviewer/Meeting]' : '[Candidate/You]'}: ${s.text}`)
+      .join('\n')
       .trim();
 
     if (recentText.length < 15 || recentText === this.lastQueriedText) {
@@ -91,38 +147,73 @@ export class SuggestionService {
     this.lastQueryTimestamp = now;
     this.lastQueriedText = recentText;
 
+    const intent = this.detectQuestionAndIntent(recentSegments);
+    logDiag('AIDiag:02-Intent', 'Utterance analysis complete', {
+      isQuestion: intent.isQuestion,
+      speaker: intent.speaker,
+      segmentsAnalyzed: recentSegments.length,
+    });
+
     try {
       const apiKey = this.settingsService.getEffectiveGeminiKey();
+      logDiag('AIDiag:03-Auth', 'Checking Gemini authentication', {
+        hasKey: Boolean(apiKey),
+        keyPrefix: apiKey ? apiKey.slice(0, 5) : 'none',
+      });
+
       if (apiKey) {
-        await this.queryGemini(apiKey, recentText);
+        await this.queryGemini(apiKey, recentText, intent);
       } else {
-        this.generateHeuristicSuggestion(recentText);
+        logDiag('AIDiag:Fallback', 'No Gemini API key configured, generating heuristic suggestion');
+        this.generateHeuristicSuggestion(recentText, intent);
       }
     } catch (err) {
-      console.warn('[SuggestionService] Falling back to heuristic suggestions:', err);
-      // Fallback ensures UI provides helpful context even during network interruptions or rate limits
-      this.generateHeuristicSuggestion(recentText);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logDiag('AIDiag:Fallback', 'Gemini query failed, falling back to heuristic', {
+        error: errMsg,
+      });
+      console.warn('[SuggestionService] Gemini query failed:', errMsg);
+      this.generateHeuristicSuggestion(recentText, intent, errMsg);
     } finally {
       this.isProcessing = false;
     }
   }
 
-  private async queryGemini(apiKey: string, transcriptText: string): Promise<void> {
-    const prompt = `You are a real-time copilot for a desktop assistant in "${this.currentMode}" mode.
-Based on the following recent conversation snippet, provide ONE concise, high-value, actionable suggestion or tip for the user.
+  private async queryGemini(
+    apiKey: string,
+    transcriptText: string,
+    intent: DetectedIntent,
+  ): Promise<void> {
+    const isInterview = this.currentMode === 'mock-interview';
 
-Conversation snippet:
-"${transcriptText}"
+    const systemPrompt = `You are GigaAgent, an elite real-time copilot for a live ${this.currentMode}.
+Your job is to provide actionable, technically rigorous, highly relevant answers and talking points for the user.
 
-Return ONLY a valid JSON object with the following schema:
+Conversation Context:
+${transcriptText}
+
+Task:
+${
+  intent.isQuestion
+    ? `The conversation contains a question or discussion point. Provide a DIRECT, high-impact technical response outline that the user can speak immediately. Give the core answer first, followed by 2-3 key technical talking points or trade-offs.`
+    : `Provide ONE high-value tactical insight or coaching point based on what was just said.`
+}
+
+Return ONLY a valid JSON object matching this schema:
 {
-  "type": "answer_tip" | "action_item" | "key_point" | "follow_up",
-  "title": "Short title (under 30 chars)",
-  "content": "One or two concise, punchy sentences of guidance (under 160 chars)"
+  "type": "${intent.isQuestion ? 'answer_tip' : 'key_point'}",
+  "title": "Clear, informative title (under 35 chars)",
+  "content": "Actionable, concrete talking points or direct answer (2-4 clear sentences with technical depth, under 300 chars)"
 }`;
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
 
+    logDiag('AIDiag:04-Request', 'Dispatching request to Gemini 1.5 Flash', {
+      model: 'gemini-1.5-flash',
+      isQuestion: intent.isQuestion,
+    });
+
+    const startTime = Date.now();
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -130,17 +221,20 @@ Return ONLY a valid JSON object with the following schema:
         'x-goog-api-key': apiKey,
       },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
+        contents: [{ parts: [{ text: systemPrompt }] }],
         generationConfig: {
-          temperature: 0.4,
-          maxOutputTokens: 200,
+          temperature: 0.3,
+          maxOutputTokens: 1024,
           responseMimeType: 'application/json',
         },
       }),
     });
 
+    const latencyMs = Date.now() - startTime;
+
     if (!response.ok) {
-      throw new Error(`Gemini API error ${response.status}: ${response.statusText}`);
+      const errBody = await response.text().catch(() => '');
+      throw new Error(`Gemini API HTTP ${response.status} (${response.statusText}): ${errBody.slice(0, 150)}`);
     }
 
     const data = (await response.json()) as {
@@ -151,25 +245,161 @@ Return ONLY a valid JSON object with the following schema:
       }>;
     };
 
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) return;
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    logDiag('AIDiag:05-Response', 'Gemini response received', {
+      latencyMs,
+      hasText: Boolean(rawText),
+      preview: rawText?.slice(0, 80),
+    });
 
-    const parsed = JSON.parse(text) as {
-      type?: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
-      title?: string;
-      content?: string;
-    };
+    if (!rawText) {
+      throw new Error('Gemini returned empty candidate content');
+    }
+
+    const parsed = this.parseGeminiJson(rawText);
+    logDiag('AIDiag:06-Parse', 'Parsed Gemini JSON output', {
+      type: parsed.type,
+      title: parsed.title,
+    });
 
     if (parsed.title && parsed.content) {
       this.emit({
-        type: parsed.type || 'answer_tip',
+        type: parsed.type || (intent.isQuestion ? 'answer_tip' : 'key_point'),
         title: parsed.title,
         content: parsed.content,
+        source: 'gemini',
+        isQuestion: intent.isQuestion,
       });
     }
   }
 
-  private generateHeuristicSuggestion(transcriptText: string): void {
+  /**
+   * Explicit test action for user or diagnostic verification.
+   * Directly queries Gemini with a known technical question to isolate network/auth from conversation detection.
+   */
+  async testGeminiConnection(
+    customQuestion = 'Explain how Raft consensus handles leader election during a network partition.',
+  ): Promise<Result<SuggestionItem>> {
+    const apiKey = this.settingsService.getEffectiveGeminiKey();
+    if (!apiKey) {
+      return {
+        ok: false,
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'No Gemini API key is configured. Please enter your Gemini API Key in Settings.',
+        },
+      };
+    }
+
+    logDiag('AIDiag:Test', 'Executing explicit Gemini test query', { question: customQuestion });
+
+    try {
+      const prompt = `You are a real-time copilot. Answer this technical question directly with structured key points:
+"${customQuestion}"
+
+Return ONLY a valid JSON object matching this schema:
+{
+  "type": "answer_tip",
+  "title": "Concise title",
+  "content": "Direct technical answer with 2-3 key talking points (under 280 chars)"
+}`;
+
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 1024,
+            responseMimeType: 'application/json',
+          },
+        }),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Gemini HTTP ${res.status}: ${body.slice(0, 150)}`);
+      }
+
+      const json = (await res.json()) as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      };
+      const text = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const parsed = this.parseGeminiJson(text);
+
+      const item: SuggestionItem = {
+        id: `test_sug_${Date.now()}`,
+        sessionId: this.activeSessionId || 'test_session',
+        createdAt: new Date().toISOString(),
+        type: 'answer_tip',
+        title: `[Live Test] ${parsed.title || 'Technical Response'}`,
+        content: parsed.content || 'Successfully verified Gemini connection.',
+        source: 'gemini',
+        isQuestion: true,
+      };
+
+      logDiag('AIDiag:Test', 'Gemini test query succeeded', {
+        title: item.title,
+        content: item.content,
+      });
+
+      this.onSuggestion(item);
+      return { ok: true, value: item };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logDiag('AIDiag:Test', 'Gemini test query failed', { error: msg });
+      return {
+        ok: false,
+        error: { code: 'SOURCE_FAILED', message: `Gemini test failed: ${msg}` },
+      };
+    }
+  }
+
+  private parseGeminiJson(rawText: string): {
+    type?: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
+    title?: string;
+    content?: string;
+  } {
+    try {
+      const cleaned = rawText
+        .replace(/^```json\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+      return JSON.parse(cleaned) as {
+        type?: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
+        title?: string;
+        content?: string;
+      };
+    } catch {
+      // Extract first JSON block if surrounded by explanatory text
+      const match = rawText.match(/\{[\s\S]*\}/);
+      if (match) {
+        try {
+          return JSON.parse(match[0]) as {
+            type?: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
+            title?: string;
+            content?: string;
+          };
+        } catch {}
+      }
+      return {
+        type: 'answer_tip',
+        title: 'Technical Copilot Tip',
+        content: rawText.slice(0, 250),
+      };
+    }
+  }
+
+  private generateHeuristicSuggestion(
+    transcriptText: string,
+    intent: DetectedIntent,
+    fallbackReason?: string,
+  ): void {
     const lower = transcriptText.toLowerCase();
 
     let suggestion: {
@@ -178,72 +408,92 @@ Return ONLY a valid JSON object with the following schema:
       content: string;
     };
 
-    if (this.currentMode === 'mock-interview') {
+    if (intent.isQuestion) {
       if (lower.includes('project') || lower.includes('background') || lower.includes('experience')) {
         suggestion = {
           type: 'answer_tip',
           title: 'Use STAR Framework',
           content: 'Structure your response: Situation, Task, Action you specifically took, and measurable Results.',
         };
-      } else if (lower.includes('trade-off') || lower.includes('hard') || lower.includes('decide')) {
+      } else if (lower.includes('distributed') || lower.includes('database') || lower.includes('scale')) {
         suggestion = {
           type: 'answer_tip',
-          title: 'Explain Decision Criteria',
-          content: 'Highlight the constraints, alternatives considered, metrics evaluated, and why the final compromise was chosen.',
+          title: 'Distributed System Architecture',
+          content: 'Address consistency vs availability (CAP), data partitioning (sharding), replication strategies, and failure detection.',
         };
-      } else if (lower.includes('disagree') || lower.includes('feedback') || lower.includes('conflict')) {
+      } else if (lower.includes('trade-off') || lower.includes('decision') || lower.includes('why')) {
         suggestion = {
           type: 'answer_tip',
-          title: 'Emphasize Curiosity',
-          content: 'Mention seeking data to validate differing perspectives and aligning on business objectives rather than personal opinions.',
+          title: 'Technical Decision Framework',
+          content: 'State requirements and constraints, evaluate 2 viable alternatives, explain why the chosen approach wins, and note monitored metrics.',
         };
       } else {
         suggestion = {
-          type: 'key_point',
-          title: 'Be Concise & Impactful',
-          content: 'Keep answers under 2 minutes and conclude with the tangible impact on customers or the team.',
+          type: 'answer_tip',
+          title: 'Structured Answer Framework',
+          content: 'Direct answer in 1 sentence, explain mechanism with technical terminology, then highlight real-world edge cases.',
         };
       }
-    } else if (this.currentMode === 'meeting') {
-      if (lower.includes('action') || lower.includes('will') || lower.includes('todo') || lower.includes('next')) {
+    } else if (this.currentMode === 'mock-interview') {
+      if (lower.includes('project') || lower.includes('background') || lower.includes('experience')) {
         suggestion = {
-          type: 'action_item',
-          title: 'Capture Action Item',
-          content: 'Confirm the owner, deliverable, and target completion date before moving to the next agenda item.',
+          type: 'answer_tip',
+          title: 'Use STAR Framework',
+          content: 'Structure your response: Situation, Task, Action you specifically took, and measurable Results.',
         };
       } else {
         suggestion = {
           type: 'key_point',
-          title: 'Executive Summary',
-          content: 'Summarize key decisions reached so far to ensure consensus across all participants.',
+          title: 'Technical Depth',
+          content: 'Explain why the architecture was designed that way and what bottleneck you had to optimize for.',
         };
       }
     } else {
       suggestion = {
-        type: 'follow_up',
-        title: 'Concept Review',
-        content: 'Identify the underlying fundamental principles and test understanding with a real-world edge case.',
+        type: 'action_item',
+        title: 'Meeting Takeaway',
+        content: 'Identify actionable decisions, assign explicit owners, and confirm delivery timeline.',
       };
     }
 
-    this.emit(suggestion);
+    if (fallbackReason) {
+      suggestion.title = `[Heuristic] ${suggestion.title}`;
+    }
+
+    this.emit({
+      ...suggestion,
+      source: 'heuristic',
+      isQuestion: intent.isQuestion,
+    });
   }
 
   private emit(item: {
     type: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
     title: string;
     content: string;
+    source?: 'gemini' | 'heuristic' | 'test';
+    isQuestion?: boolean;
   }): void {
     if (!this.activeSessionId) return;
 
-    this.onSuggestion({
+    const suggestion: SuggestionItem = {
       id: `sug_${Date.now()}_${++this.suggestionCounter}`,
       sessionId: this.activeSessionId,
       createdAt: new Date().toISOString(),
       type: item.type,
       title: item.title,
       content: item.content,
+      source: item.source || 'gemini',
+      isQuestion: item.isQuestion,
+    };
+
+    logDiag('AIDiag:07-Delivery', 'Emitting suggestion to UI and session store', {
+      id: suggestion.id,
+      title: suggestion.title,
+      source: suggestion.source,
     });
+
+    this.onSuggestion(suggestion);
   }
 
   destroy(): void {

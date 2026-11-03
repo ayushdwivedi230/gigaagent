@@ -23,8 +23,11 @@ export class SystemAudioCaptureService {
   private workletNode: AudioWorkletNode | null = null;
   private isCapturing = false;
 
+  private chunkCounter = 0;
+
   async start(callbacks: AudioCaptureCallbacks): Promise<void> {
     if (this.isCapturing) return;
+    this.chunkCounter = 0;
 
     try {
       if (!navigator?.mediaDevices?.getDisplayMedia) {
@@ -32,15 +35,17 @@ export class SystemAudioCaptureService {
       }
 
       // 1. Arm the main process gate right before user gesture prompts the capture
+      console.log('[SysAudioDiag:01-Gate] Requesting main process to arm gate...');
       if (window.api?.systemAudio) {
         const armResult = await window.api.systemAudio.arm();
         if (!armResult.ok) {
           throw new Error('Failed to authorize system audio capture with main process.');
         }
+        console.log('[SysAudioDiag:01-Gate] Main process gate successfully armed');
       }
 
       // 2. Request display media with loopback audio.
-      // Screen Capture API strictly prohibits minWidth/minHeight constraints.
+      console.log('[SysAudioDiag:02-DisplayMedia] Calling navigator.mediaDevices.getDisplayMedia...');
       this.mediaStream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
         audio: {
@@ -50,38 +55,67 @@ export class SystemAudioCaptureService {
         },
       });
 
-      // 3. Immediately stop all video tracks to discard screen pixels without rendering or recording
+      console.log('[SysAudioDiag:05-StreamAcquisition] getDisplayMedia resolved', {
+        streamId: this.mediaStream.id,
+        videoTracks: this.mediaStream.getVideoTracks().length,
+        audioTracks: this.mediaStream.getAudioTracks().length,
+      });
+
+      // 3. Disable video tracks to discard screen pixels without rendering or recording.
+      // CRITICAL: DO NOT call track.stop()! In Chromium on Windows, stopping the video track
+      // terminates the underlying DesktopCaptureDevice, killing the WASAPI loopback audio stream!
       const videoTracks = this.mediaStream.getVideoTracks();
       for (const track of videoTracks) {
-        track.stop();
+        track.enabled = false;
+        console.log('[SysAudioDiag:06-TrackInspection] Video track disabled (enabled=false, not stopped)', {
+          id: track.id,
+          readyState: track.readyState,
+          muted: track.muted,
+        });
       }
 
       // 4. Verify system audio track was provided
       const audioTracks = this.mediaStream.getAudioTracks();
       if (audioTracks.length === 0) {
-        this.mediaStream.getTracks().forEach((t) => t.stop());
+        this.stop();
         throw new Error(
           'No system audio track provided. When prompted, ensure "Share audio" is selected.',
         );
       }
 
+      const primaryAudioTrack = audioTracks[0]!;
+      console.log('[SysAudioDiag:06-TrackInspection] System audio track verified live', {
+        id: primaryAudioTrack.id,
+        readyState: primaryAudioTrack.readyState,
+        muted: primaryAudioTrack.muted,
+        enabled: primaryAudioTrack.enabled,
+      });
+
       // Handle external termination (e.g. user clicks "Stop sharing" in OS bar)
-      const primaryAudioTrack = audioTracks[0];
-      if (primaryAudioTrack) {
-        primaryAudioTrack.onended = () => {
-          if (this.isCapturing) {
-            this.stop();
-            callbacks.onError?.(
-              new Error('System playback audio capture was stopped by the system or user.'),
-            );
-          }
-        };
-      }
+      primaryAudioTrack.onended = () => {
+        console.log('[SysAudioDiag:06-TrackInspection] System audio track ended by OS/user');
+        if (this.isCapturing) {
+          this.stop();
+          callbacks.onError?.(
+            new Error('System playback audio capture was stopped by the system or user.'),
+          );
+        }
+      };
 
       const AudioCtx =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.audioContext = new AudioCtx({ sampleRate: 16000 });
+
+      // Ensure AudioContext is actively running
+      if (this.audioContext.state === 'suspended') {
+        console.log('[SysAudioDiag:07-AudioContext] AudioContext was suspended, resuming...');
+        await this.audioContext.resume();
+      }
+      console.log('[SysAudioDiag:07-AudioContext] AudioContext active', {
+        sampleRate: this.audioContext.sampleRate,
+        state: this.audioContext.state,
+      });
 
       // Create a blob URL for the inlined worklet processor
       const blob = new Blob([AUDIO_WORKLET_CODE], { type: 'application/javascript' });
@@ -93,12 +127,34 @@ export class SystemAudioCaptureService {
         URL.revokeObjectURL(blobUrl);
       }
 
-      this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
+      // Connect ONLY the audio track to AudioContext to prevent multi-track or video overhead
+      const audioOnlyStream = new MediaStream([primaryAudioTrack]);
+      this.sourceNode = this.audioContext.createMediaStreamSource(audioOnlyStream);
       this.workletNode = new AudioWorkletNode(this.audioContext, AUDIO_WORKLET_NAME);
 
       this.workletNode.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
         if (!this.isCapturing) return;
-        callbacks.onChunk(event.data);
+        const chunk = event.data;
+        this.chunkCounter++;
+
+        // Calculate RMS of incoming Int16 samples periodically for non-silent diagnostics
+        if (this.chunkCounter % 50 === 1) {
+          const samples = new Int16Array(chunk);
+          let sumSquares = 0;
+          for (let i = 0; i < samples.length; i++) {
+            const v = (samples[i] ?? 0) / 32768.0;
+            sumSquares += v * v;
+          }
+          const rms = Math.sqrt(sumSquares / (samples.length || 1));
+          console.log(`[SysAudioDiag:09-PCMStreaming] Audio chunk #${this.chunkCounter}`, {
+            bytes: chunk.byteLength,
+            samples: samples.length,
+            rms: rms.toFixed(4),
+            nonSilent: rms > 0.001,
+          });
+        }
+
+        callbacks.onChunk(chunk);
       };
 
       this.sourceNode.connect(this.workletNode);
@@ -110,6 +166,7 @@ export class SystemAudioCaptureService {
       silentGain.connect(this.audioContext.destination);
 
       this.isCapturing = true;
+      console.log('[SysAudioDiag:08-Worklet] AudioWorklet pipeline fully wired and capturing PCM chunks');
     } catch (err) {
       this.stop();
       if (

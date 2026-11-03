@@ -30,6 +30,9 @@ const api: MeetingAssistantApi = {
       ipcRenderer.send(IPC.audioChunk, source, buffer);
     },
   },
+  gemini: {
+    test: (question) => ipcRenderer.invoke(IPC.geminiTest, question),
+  },
   window: {
     minimize: () => { void ipcRenderer.invoke(IPC.windowMinimize); },
     close: () => { void ipcRenderer.invoke(IPC.windowClose); },

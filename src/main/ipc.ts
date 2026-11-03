@@ -7,6 +7,7 @@ import type { Result, UpdateSettingsRequest } from '@shared/types';
 import type { SessionService } from './services/sessionService';
 import type { SettingsService } from './services/settingsService';
 import type { SystemAudioGate } from './services/systemAudioGate';
+import type { SuggestionService } from './services/suggestionService';
 
 /**
  * Registers request/response handlers and forwards service events to the window.
@@ -18,6 +19,7 @@ export function registerIpc(
   service: SessionService,
   settingsService: SettingsService,
   systemAudioGate?: SystemAudioGate,
+  suggestionService?: SuggestionService,
 ): () => void {
   const trusted = (event: IpcMainInvokeEvent | IpcMainEvent): boolean =>
     !win.isDestroyed() && event.sender === win.webContents;
@@ -66,6 +68,13 @@ export function registerIpc(
   handle(IPC.systemAudioDisarm, () => {
     systemAudioGate?.disarm();
     return ok({ armed: false });
+  });
+
+  handle(IPC.geminiTest, (raw) => {
+    const question = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+    return suggestionService
+      ? suggestionService.testGeminiConnection(question)
+      : err('INTERNAL', 'Suggestion service is unavailable.');
   });
 
   const onAudioChunk = (

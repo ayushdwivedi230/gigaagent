@@ -1,6 +1,8 @@
 import type { AppError, RawSegment } from '@shared/types';
 import type { TranscriptSource } from './transcriptSource';
 import type { SettingsService } from './settingsService';
+import { createDeepgramSocket, type ISocket } from './deepgramSocket';
+import { logDiag } from './diagnosticsLogger';
 
 export interface SystemAudioSourceOptions {
   settingsService: SettingsService;
@@ -13,7 +15,7 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
   private running = false;
   private emitSegment: ((segment: RawSegment) => void) | undefined;
   private emitError: ((error: AppError) => void) | undefined;
-  private ws: WebSocket | null = null;
+  private ws: ISocket | null = null;
   private readonly settingsService: SettingsService;
   private readonly clock: () => number;
 
@@ -37,11 +39,14 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
     this.clock = options.clock ?? Date.now;
   }
 
+  private chunkCount = 0;
+
   async start(
     onSegment: (segment: RawSegment) => void,
     onError: (error: AppError) => void,
   ): Promise<void> {
     this.running = true;
+    this.chunkCount = 0;
     this.emitSegment = onSegment;
     this.emitError = onError;
     this.startedAt = this.clock();
@@ -50,6 +55,11 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
 
     const settings = this.settingsService.getSettings();
     const apiKey = this.settingsService.getEffectiveSttKey();
+
+    logDiag('SysAudioDiag:11-MainSource', 'SystemAudioTranscriptSource starting', {
+      provider: settings.sttProvider,
+      hasApiKey: Boolean(apiKey),
+    });
 
     if (settings.sttProvider === 'mock' || !apiKey) {
       if (!apiKey && settings.sttProvider !== 'mock') {
@@ -78,15 +88,23 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
       return;
     }
 
+    this.chunkCount++;
+    if (this.chunkCount % 50 === 1) {
+      logDiag('SysAudioDiag:11-MainSource', `Received audio chunk #${this.chunkCount}`, {
+        bytes: chunk.byteLength,
+        wsReadyState: this.ws ? this.ws.readyState : 'no-ws',
+      });
+    }
+
     // If using real WebSocket connection
     if (this.ws) {
-      if (this.ws.readyState === WebSocket.OPEN) {
+      if (this.ws.readyState === 1) { // 1 = OPEN
         try {
           this.ws.send(chunk);
         } catch (err) {
           console.warn('[SystemAudioTranscriptSource] Failed to send audio chunk', err);
         }
-      } else if (this.ws.readyState === WebSocket.CONNECTING) {
+      } else if (this.ws.readyState === 0) { // 0 = CONNECTING
         if (this.pendingBytes + chunk.byteLength <= this.MAX_BUFFER_BYTES) {
           this.pendingChunks.push(chunk);
           this.pendingBytes += chunk.byteLength;
@@ -110,12 +128,12 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
       const url =
         'wss://api.deepgram.com/v1/listen?encoding=linear16&sample_rate=16000&channels=1&interim_results=true&smart_format=true&model=nova-2';
 
-      const ws = new WebSocket(url, ['token', cleanKey]);
+      const ws = createDeepgramSocket(url, cleanKey);
       this.ws = ws;
 
       if (this.keepAliveTimer) clearInterval(this.keepAliveTimer);
       this.keepAliveTimer = setInterval(() => {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        if (this.ws && this.ws.readyState === 1) {
           try {
             this.ws.send(JSON.stringify({ type: 'KeepAlive' }));
           } catch {}
@@ -123,6 +141,7 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
       }, 8000);
 
       ws.onopen = () => {
+        logDiag('SysAudioDiag:11-MainSource', 'System audio Deepgram WebSocket connected (OPEN)');
         if (!this.running) {
           try {
             ws.close();
@@ -133,17 +152,17 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
         // Flush queued buffer
         while (this.pendingChunks.length > 0) {
           const chunk = this.pendingChunks.shift();
-          if (chunk && ws.readyState === WebSocket.OPEN) {
+          if (chunk && ws.readyState === 1) {
             ws.send(chunk);
           }
         }
         this.pendingBytes = 0;
       };
 
-      ws.onmessage = (event: MessageEvent) => {
+      ws.onmessage = (event: { data: string }) => {
         if (!this.running) return;
         try {
-          const data = JSON.parse(String(event.data));
+          const data = JSON.parse(event.data);
           this.handleDeepgramResponse(data);
         } catch (err) {
           console.error('[SystemAudioTranscriptSource] Failed to parse Deepgram response', err);
@@ -167,15 +186,16 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
           console.warn('[SystemAudioTranscriptSource] WebSocket closed unexpectedly', event.code, event.reason);
           this.emitError?.({
             code: 'SOURCE_FAILED',
-            message: `System audio transcription closed (code ${event.code}).`,
+            message: `System audio transcription closed (code ${event.code}): ${event.reason || 'Network error'}.`,
           });
         }
       };
     } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
       console.error('[SystemAudioTranscriptSource] Failed to initialize WebSocket', err);
       this.emitError?.({
         code: 'SOURCE_FAILED',
-        message: 'Could not connect to Deepgram streaming service for system audio.',
+        message: `Could not connect system audio to Speech-to-Text service: ${errMsg}`,
       });
     }
   }
@@ -202,6 +222,13 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
 
     const startMs = Math.round(startSec * 1000);
     const endMs = isFinal ? Math.round((startSec + durationSec) * 1000) : null;
+
+    logDiag('SysAudioDiag:12-DeepgramSTT', 'System transcript segment produced', {
+      segmentId: this.currentSegmentId,
+      speaker: 'system',
+      isFinal,
+      textPreview: text.length > 50 ? `${text.slice(0, 50)}…` : text,
+    });
 
     this.emitSegment?.({
       id: this.currentSegmentId,
@@ -295,7 +322,7 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
 
     if (this.ws) {
       try {
-        if (this.ws.readyState === WebSocket.OPEN) {
+        if (this.ws.readyState === 1) {
           this.ws.send(JSON.stringify({ type: 'CloseStream' }));
         }
         this.ws.close(1000, 'Session stopped normally');
