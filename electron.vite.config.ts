@@ -3,6 +3,9 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 import type { Plugin } from 'vite';
 
+// Ensure child Electron processes never inherit ELECTRON_RUN_AS_NODE
+delete process.env.ELECTRON_RUN_AS_NODE;
+
 const alias = {
   '@shared': resolve(__dirname, 'src/shared'),
   '@renderer': resolve(__dirname, 'src/renderer/src'),
