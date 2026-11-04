@@ -14,6 +14,8 @@ import { SqliteSessionRepository } from './services/sqliteSessionRepository';
 import { SessionService } from './services/sessionService';
 import { SettingsService } from './services/settingsService';
 import { SuggestionService } from './services/suggestionService';
+import { ScreenCaptureService } from './services/screenCaptureService';
+import { ScreenContextManager } from './services/screenContextManager';
 import { initDiagnosticsLogger, logDiag } from './services/diagnosticsLogger';
 import type { SessionSnapshot } from '@shared/types';
 
@@ -23,6 +25,8 @@ let repository: SessionRepository;
 let service: SessionService;
 let suggestionService: SuggestionService;
 const systemAudioGate = new SystemAudioGate();
+const screenContextManager = new ScreenContextManager();
+const screenCaptureService = new ScreenCaptureService();
 
 async function initServices(): Promise<void> {
   const userDataDir = app.getPath('userData');
@@ -57,6 +61,7 @@ async function initServices(): Promise<void> {
 
   suggestionService = new SuggestionService({
     settingsService,
+    screenContextManager,
     onSuggestion: (suggestion) => {
       service.emitEvent({ type: 'suggestion', suggestion });
     },
@@ -178,7 +183,15 @@ if (!app.requestSingleInstanceLock()) {
     const win = createMainWindow();
     mainWindow = win;
     configurePermissions(win);
-    registerIpc(win, service, settingsService, systemAudioGate, suggestionService);
+    registerIpc(
+      win,
+      service,
+      settingsService,
+      systemAudioGate,
+      suggestionService,
+      screenCaptureService,
+      screenContextManager,
+    );
 
     win.on('closed', () => {
       mainWindow = null;

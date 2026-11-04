@@ -3,11 +3,13 @@ import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { IPC } from '@shared/ipc';
 import { parseSessionId, parseStartRequest } from '@shared/validation';
 import { err, ok } from '@shared/types';
-import type { Result, UpdateSettingsRequest } from '@shared/types';
+import type { Result, ScreenAnalysisRequest, UpdateSettingsRequest } from '@shared/types';
 import type { SessionService } from './services/sessionService';
 import type { SettingsService } from './services/settingsService';
 import type { SystemAudioGate } from './services/systemAudioGate';
 import type { SuggestionService } from './services/suggestionService';
+import type { ScreenCaptureService } from './services/screenCaptureService';
+import type { ScreenContextManager } from './services/screenContextManager';
 import { logDiag } from './services/diagnosticsLogger';
 
 /**
@@ -21,6 +23,8 @@ export function registerIpc(
   settingsService: SettingsService,
   systemAudioGate?: SystemAudioGate,
   suggestionService?: SuggestionService,
+  screenCaptureService?: ScreenCaptureService,
+  screenContextManager?: ScreenContextManager,
 ): () => void {
   const trusted = (event: IpcMainInvokeEvent | IpcMainEvent): boolean =>
     !win.isDestroyed() && event.sender === win.webContents;
@@ -110,6 +114,58 @@ export function registerIpc(
     return suggestionService
       ? suggestionService.askQuestion(question, options)
       : err('INTERNAL', 'Suggestion service is unavailable.');
+  });
+
+  handle(IPC.screenGetSources, () => {
+    return screenCaptureService
+      ? screenCaptureService.getAvailableSources()
+      : err('INTERNAL', 'Screen capture service is unavailable.');
+  });
+
+  handle(IPC.screenCapture, async (raw) => {
+    const sourceId = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+    if (!screenCaptureService) {
+      return err('INTERNAL', 'Screen capture service is unavailable.');
+    }
+    const res = await screenCaptureService.capture(sourceId);
+    if (res.ok && screenContextManager) {
+      screenContextManager.setPending(res.value);
+    }
+    return res;
+  });
+
+  handle(IPC.screenConfirm, (raw) => {
+    const screenshotId = typeof raw === 'string' ? raw.trim() : '';
+    if (!screenshotId) return err('INVALID_REQUEST', 'Invalid screenshot ID.');
+    const confirmed = screenContextManager?.confirm(screenshotId) ?? false;
+    return ok({ confirmed });
+  });
+
+  handle(IPC.screenDiscard, (raw) => {
+    const screenshotId = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+    const discarded = screenContextManager?.discard(screenshotId) ?? false;
+    return ok({ discarded });
+  });
+
+  handle(IPC.screenClearContext, () => {
+    screenContextManager?.clear();
+    return ok({ cleared: true });
+  });
+
+  handle(IPC.screenGetContext, () => {
+    return ok(screenContextManager?.getConfirmed() ?? null);
+  });
+
+  handle(IPC.screenAnalyze, (raw) => {
+    if (!suggestionService) return err('INTERNAL', 'Suggestion service is unavailable.');
+    if (typeof raw !== 'object' || raw === null || !('question' in raw)) {
+      return err('INVALID_REQUEST', 'Malformed screen analysis request.');
+    }
+    const req = raw as ScreenAnalysisRequest;
+    if (!req.question || typeof req.question !== 'string' || !req.question.trim()) {
+      return err('INVALID_REQUEST', 'Question cannot be empty.');
+    }
+    return suggestionService.analyzeScreenshot(req);
   });
 
   ipcMain.on(IPC.diagLog, (_event, category: unknown, message: unknown, data: unknown) => {

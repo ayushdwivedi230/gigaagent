@@ -1,10 +1,19 @@
-import type { Result, SessionMode, SuggestionItem, TranscriptSegment } from '@shared/types';
+import type {
+  Result,
+  ScreenAnalysisRequest,
+  ScreenshotData,
+  SessionMode,
+  SuggestionItem,
+  TranscriptSegment,
+} from '@shared/types';
 import type { SettingsService } from './settingsService';
+import type { ScreenContextManager } from './screenContextManager';
 import { logDiag } from './diagnosticsLogger';
 
 export interface SuggestionServiceOptions {
   settingsService: SettingsService;
   onSuggestion: (suggestion: SuggestionItem) => void;
+  screenContextManager?: ScreenContextManager;
   debounceMs?: number;
   minIntervalMs?: number;
 }
@@ -19,6 +28,7 @@ export interface DetectedIntent {
 export class SuggestionService {
   private readonly settingsService: SettingsService;
   private readonly onSuggestion: (suggestion: SuggestionItem) => void;
+  private readonly screenContextManager?: ScreenContextManager;
   private readonly debounceMs: number;
   private readonly minIntervalMs: number;
 
@@ -34,6 +44,7 @@ export class SuggestionService {
   constructor(options: SuggestionServiceOptions) {
     this.settingsService = options.settingsService;
     this.onSuggestion = options.onSuggestion;
+    this.screenContextManager = options.screenContextManager;
     this.debounceMs = options.debounceMs ?? 2000;
     this.minIntervalMs = options.minIntervalMs ?? 6000; // 6s cooldown for faster response while respecting quota
   }
@@ -206,12 +217,28 @@ Return ONLY a valid JSON object matching this schema:
   "content": "Actionable, concrete talking points or direct answer (2-4 clear sentences with technical depth, under 300 chars)"
 }`;
 
+    const activeScreen = this.screenContextManager?.getConfirmed();
+    const hasVision = Boolean(activeScreen);
+
     logDiag('AIDiag:04-Request', 'Dispatching request to Gemini API', {
       isQuestion: intent.isQuestion,
+      hasVision,
     });
 
     const startTime = Date.now();
-    const { text: rawText, modelUsed } = await this.dispatchGeminiRequest(apiKey, systemPrompt);
+    let rawText = '';
+    let modelUsed = '';
+
+    if (activeScreen) {
+      const visionPrompt = `${systemPrompt}\n\nNote: A confirmed screenshot of the user's screen is attached. Relate your response directly to what is on screen if relevant.`;
+      const res = await this.dispatchGeminiVisionRequest(apiKey, visionPrompt, activeScreen.base64);
+      rawText = res.text;
+      modelUsed = res.modelUsed;
+    } else {
+      const res = await this.dispatchGeminiRequest(apiKey, systemPrompt);
+      rawText = res.text;
+      modelUsed = res.modelUsed;
+    }
     const latencyMs = Date.now() - startTime;
 
     logDiag('AIDiag:05-Response', 'Gemini response received', {
@@ -253,8 +280,18 @@ Return ONLY a valid JSON object matching this schema:
       mode?: SessionMode;
       context?: string;
       formatType?: string;
+      ignoreScreenContext?: boolean;
     },
   ): Promise<Result<SuggestionItem>> {
+    // If active confirmed screen context exists and not explicitly ignored, route to analyzeScreenshot
+    if (!options?.ignoreScreenContext && this.screenContextManager?.hasContext()) {
+      return this.analyzeScreenshot({
+        question,
+        mode: options?.mode,
+        context: options?.context,
+      });
+    }
+
     const apiKey = this.settingsService.getEffectiveGeminiKey();
     if (!apiKey) {
       return {
@@ -350,6 +387,257 @@ Return ONLY a valid JSON object matching this schema:
         },
       };
     }
+  }
+
+  /**
+   * Analyzes an explicitly captured screenshot with Gemini Vision.
+   * Multi-turn aware: keeps previous questions and answers in conversation history.
+   */
+  async analyzeScreenshot(request: ScreenAnalysisRequest): Promise<Result<SuggestionItem>> {
+    const apiKey = this.settingsService.getEffectiveGeminiKey();
+    if (!apiKey) {
+      return {
+        ok: false,
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'No Gemini API key is configured. Please enter your Gemini API Key in Settings.',
+        },
+      };
+    }
+
+    let screenshot: ScreenshotData | null = null;
+    if (request.screenshotId) {
+      if (this.screenContextManager?.getConfirmed()?.id === request.screenshotId) {
+        screenshot = this.screenContextManager.getConfirmed();
+      } else if (this.screenContextManager?.getPending()?.id === request.screenshotId) {
+        screenshot = this.screenContextManager.getPending();
+      }
+    }
+
+    if (!screenshot) {
+      screenshot =
+        this.screenContextManager?.getConfirmed() ??
+        this.screenContextManager?.getPending() ??
+        null;
+    }
+
+    if (!screenshot) {
+      return {
+        ok: false,
+        error: {
+          code: 'INVALID_REQUEST',
+          message:
+            'No screenshot is available for analysis. Please capture and confirm a screenshot first.',
+        },
+      };
+    }
+
+    const mode = request.mode ?? this.currentMode ?? 'mock-interview';
+    const recentContext =
+      request.context ??
+      this.accumulatedSegments
+        .slice(-6)
+        .map((s) => `${s.speaker === 'system' ? 'Meeting/Interviewer' : 'You'}: ${s.text}`)
+        .join('\n')
+        .trim();
+
+    const turns = this.screenContextManager?.getTurns() ?? [];
+    const turnHistoryText =
+      turns.length > 0
+        ? `Prior Visual Q&A Turns on this screen:\n${turns
+            .map((t, idx) => `Turn ${idx + 1}:\nQ: ${t.question}\nA: ${t.answer}`)
+            .join('\n\n')}\n`
+        : '';
+
+    logDiag('AIDiag:Vision', 'Analyzing screenshot with Gemini Vision', {
+      question: request.question,
+      screenshotId: screenshot.id,
+      turnsCount: turns.length,
+      mode,
+    });
+
+    const systemPrompt = `You are GigaAgent, an elite real-time desktop AI copilot with multimodal screen intelligence.
+You are assisting the user during a ${mode}.
+Analyze the attached high-resolution screen image with rigorous technical accuracy.
+
+The screen may display:
+- Code editor / IDE (source code, syntax/runtime bugs, stack traces, compiler output)
+- Coding problems (LeetCode, HackerRank, DSA challenges, constraints, input/output examples)
+- Terminal / command line output (errors, logs, git operations, deployment issues)
+- Architecture diagrams, system designs, UML schemas, flowcharts
+- Web applications, responsive UI layouts, CSS/HTML structures
+- Tables, financial metrics, technical documentation, spreadsheets
+
+Instructions:
+1. Direct Answer: Answer the user's specific question or instruction authoritatively.
+2. If code/debugging: Pinpoint the exact root cause, line number(s), and provide the clean, corrected code in a markdown code block (\`\`\`<lang> ... \`\`\`).
+3. If DSA problem: Provide the optimal algorithmic approach, time and space complexity in Big-O notation, key edge cases, and concise implementation.
+4. If Architecture/Diagram: Deconstruct components, message flow, bottlenecks, and single points of failure.
+5. If UI/Design: Provide actionable suggestions for accessibility, layout hierarchy, and responsive CSS.
+6. Format cleanly using standard Markdown: bold highlights, bullet points, and code blocks.
+
+${turnHistoryText}
+${recentContext ? `Recent Conversation Transcript:\n${recentContext}\n` : ''}
+User Question / Instruction:
+"${request.question}"
+
+Return ONLY a valid JSON object matching this schema:
+{
+  "title": "Concise topic title (under 40 chars)",
+  "formatType": "technical",
+  "content": "Comprehensive markdown response with bold highlights, bullet points, and code fences. Ensure code snippets are complete and runnable."
+}`;
+
+    try {
+      const { text, modelUsed } = await this.dispatchGeminiVisionRequest(
+        apiKey,
+        systemPrompt,
+        screenshot.base64,
+      );
+      const parsed = this.parseGeminiJson(text);
+
+      const content = parsed.content || text;
+      const title = parsed.title || 'Screen Intelligence';
+
+      // Record in multi-turn history
+      this.screenContextManager?.addTurn(request.question, content);
+
+      const item: SuggestionItem = {
+        id: `vis_${Date.now()}_${++this.suggestionCounter}`,
+        sessionId: this.activeSessionId || 'screen_query',
+        createdAt: new Date().toISOString(),
+        type: 'answer_tip',
+        title,
+        content,
+        source: 'gemini',
+        isQuestion: true,
+        question: request.question,
+        formatType:
+          (parsed.formatType as any) ||
+          (mode === 'mock-interview' ? 'interview' : 'technical'),
+        modelUsed,
+        hasVisualContext: true,
+      };
+
+      logDiag('AIDiag:Vision', 'Gemini Vision analysis completed successfully', {
+        id: item.id,
+        modelUsed,
+        title: item.title,
+      });
+
+      this.emit(item);
+      return { ok: true, value: item };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logDiag('AIDiag:Vision', 'Gemini Vision analysis failed', { error: errMsg });
+      return {
+        ok: false,
+        error: {
+          code: 'SOURCE_FAILED',
+          message: `Screen analysis failed: ${errMsg}`,
+        },
+      };
+    }
+  }
+
+  /**
+   * Dispatches multimodal generateContent request with automatic fallback across vision-capable models.
+   */
+  private async dispatchGeminiVisionRequest(
+    apiKey: string,
+    prompt: string,
+    base64Image: string,
+  ): Promise<{ text: string; modelUsed: string }> {
+    const candidateModels = [
+      'gemini-flash-lite-latest',
+      'gemini-3.5-flash-lite',
+      'gemini-flash-latest',
+      'gemini-3.8-flash',
+    ];
+    let lastError: Error | null = null;
+
+    for (const model of candidateModels) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: 'image/jpeg',
+                      data: base64Image,
+                    },
+                  },
+                  {
+                    text: prompt,
+                  },
+                ],
+              },
+            ],
+            generationConfig: {
+              temperature: 0.2,
+              maxOutputTokens: 2048,
+              responseMimeType: 'application/json',
+            },
+          }),
+        });
+
+        if (response.status === 404 || response.status === 503 || response.status === 429) {
+          const errBody = await response.text().catch(() => '');
+          logDiag(
+            'AIDiag:ModelFallback',
+            `Vision model ${model} returned HTTP ${response.status}, trying next candidate...`,
+            {
+              model,
+              status: response.status,
+              details: errBody.slice(0, 100),
+            },
+          );
+          lastError = new Error(
+            `Vision model ${model} returned HTTP ${response.status}: ${errBody.slice(0, 100)}`,
+          );
+          continue;
+        }
+
+        if (!response.ok) {
+          const errBody = await response.text().catch(() => '');
+          throw new Error(
+            `Gemini Vision HTTP ${response.status} (${response.statusText}): ${errBody.slice(0, 150)}`,
+          );
+        }
+
+        const data = (await response.json()) as {
+          candidates?: Array<{
+            content?: {
+              parts?: Array<{ text?: string }>;
+            };
+          }>;
+        };
+
+        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!rawText) {
+          throw new Error(`Gemini Vision returned empty candidate content for ${model}`);
+        }
+
+        return { text: rawText, modelUsed: model };
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        const msg = lastError.message;
+        if (msg.includes('404') || msg.includes('503') || msg.includes('429')) {
+          continue;
+        }
+        throw lastError;
+      }
+    }
+
+    throw lastError || new Error('No supported Gemini Vision model found on endpoints.');
   }
 
   /**
@@ -505,7 +793,11 @@ Return ONLY a valid JSON object matching this schema:
         .replace(/^```json\s*/i, '')
         .replace(/\s*```$/i, '')
         .trim();
-      return JSON.parse(cleaned) as {
+      let parsed = JSON.parse(cleaned);
+      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object' && parsed[0] !== null) {
+        parsed = parsed[0];
+      }
+      return parsed as {
         type?: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
         title?: string;
         content?: string;
@@ -513,10 +805,14 @@ Return ONLY a valid JSON object matching this schema:
       };
     } catch {
       // Extract first JSON block if surrounded by explanatory text
-      const match = rawText.match(/\{[\s\S]*\}/);
+      const match = rawText.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
       if (match) {
         try {
-          return JSON.parse(match[0]) as {
+          let parsed = JSON.parse(match[0]);
+          if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object' && parsed[0] !== null) {
+            parsed = parsed[0];
+          }
+          return parsed as {
             type?: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
             title?: string;
             content?: string;

@@ -1,6 +1,9 @@
 import type {
   ClientSettings,
+  DesktopSourceInfo,
   Result,
+  ScreenAnalysisRequest,
+  ScreenshotData,
   SessionDetail,
   SessionEvent,
   SessionSnapshot,
@@ -26,6 +29,13 @@ export const IPC = {
   audioChunk: 'audio:chunk',
   geminiTest: 'gemini:test',
   aiAsk: 'ai:ask',
+  screenGetSources: 'screen:get-sources',
+  screenCapture: 'screen:capture',
+  screenConfirm: 'screen:confirm',
+  screenDiscard: 'screen:discard',
+  screenClearContext: 'screen:clear-context',
+  screenGetContext: 'screen:get-context',
+  screenAnalyze: 'screen:analyze',
   diagLog: 'diag:log',
   event: 'session:event',
   windowMinimize: 'window:minimize',
@@ -68,6 +78,15 @@ export interface MeetingAssistantApi {
         formatType?: string;
       },
     ): Promise<Result<SuggestionItem>>;
+  };
+  screen: {
+    getSources(): Promise<Result<DesktopSourceInfo[]>>;
+    capture(sourceId?: string): Promise<Result<ScreenshotData>>;
+    confirm(screenshotId: string): Promise<Result<{ confirmed: boolean }>>;
+    discard(screenshotId?: string): Promise<Result<{ discarded: boolean }>>;
+    clearContext(): Promise<Result<{ cleared: boolean }>>;
+    getContext(): Promise<Result<ScreenshotData | null>>;
+    analyze(request: ScreenAnalysisRequest): Promise<Result<SuggestionItem>>;
   };
   diag: {
     log(category: string, message: string, data?: Record<string, unknown>): void;

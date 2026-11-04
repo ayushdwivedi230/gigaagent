@@ -5,6 +5,7 @@ interface AskAiInputProps {
   isGenerating: boolean;
   autoAnswer: boolean;
   onToggleAutoAnswer: (val: boolean) => void;
+  hasVisualContext?: boolean;
 }
 
 export function AskAiInput({
@@ -12,6 +13,7 @@ export function AskAiInput({
   isGenerating,
   autoAnswer,
   onToggleAutoAnswer,
+  hasVisualContext = false,
 }: AskAiInputProps) {
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -30,21 +32,25 @@ export function AskAiInput({
     }
   };
 
+  const placeholderText = hasVisualContext
+    ? 'Ask AI about this screen, code, stack trace, or problem… (Enter)'
+    : 'Ask AI anything or paste a question… (Enter)';
+
   return (
     <div className="ask-ai-container">
       <form onSubmit={handleSubmit} className="ask-ai-form">
         <div className="ask-ai-input-wrap">
           <span className="ask-ai-search-icon" aria-hidden="true">
-            ✦
+            {hasVisualContext ? '👁️' : '✦'}
           </span>
           <input
             ref={inputRef}
             type="text"
-            className="ask-ai-input"
+            className={`ask-ai-input ${hasVisualContext ? 'ask-ai-input--vision' : ''}`}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask AI anything or paste a question… (Enter)"
+            placeholder={placeholderText}
             disabled={isGenerating}
             maxLength={300}
             aria-label="Ask AI question input"

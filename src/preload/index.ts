@@ -36,6 +36,15 @@ const api: MeetingAssistantApi = {
   ai: {
     ask: (question, options) => ipcRenderer.invoke(IPC.aiAsk, { question, options }),
   },
+  screen: {
+    getSources: () => ipcRenderer.invoke(IPC.screenGetSources),
+    capture: (sourceId) => ipcRenderer.invoke(IPC.screenCapture, sourceId),
+    confirm: (screenshotId) => ipcRenderer.invoke(IPC.screenConfirm, screenshotId),
+    discard: (screenshotId) => ipcRenderer.invoke(IPC.screenDiscard, screenshotId),
+    clearContext: () => ipcRenderer.invoke(IPC.screenClearContext),
+    getContext: () => ipcRenderer.invoke(IPC.screenGetContext),
+    analyze: (request) => ipcRenderer.invoke(IPC.screenAnalyze, request),
+  },
   diag: {
     log: (category, message, data) => {
       ipcRenderer.send(IPC.diagLog, category, message, data);

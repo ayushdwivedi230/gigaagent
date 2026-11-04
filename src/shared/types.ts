@@ -41,6 +41,33 @@ export interface SuggestionItem {
   question?: string;
   formatType?: 'direct' | 'technical' | 'interview' | 'star' | 'followup' | 'meeting' | 'points';
   modelUsed?: string;
+  hasVisualContext?: boolean;
+}
+
+export interface DesktopSourceInfo {
+  id: string;
+  name: string;
+  thumbnailUrl: string;
+  displayId?: string;
+  isScreen: boolean;
+}
+
+export interface ScreenshotData {
+  id: string;
+  sourceId: string;
+  sourceName: string;
+  dataUrl: string; // JPEG data URL for renderer display
+  base64: string;  // Raw base64 for API transmission
+  width: number;
+  height: number;
+  capturedAt: string; // ISO 8601
+}
+
+export interface ScreenAnalysisRequest {
+  question: string;
+  mode?: SessionMode;
+  context?: string;
+  screenshotId?: string;
 }
 
 export interface AppSettings {

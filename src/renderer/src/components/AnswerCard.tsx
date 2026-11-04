@@ -191,6 +191,15 @@ export function AnswerCard({ answer, isGenerating, onRegenerate, onClear }: Answ
       {/* ── Top Bar: Format Badge & Action Buttons ── */}
       <div className="answer-header">
         <div className="answer-badge-group">
+          {answer?.hasVisualContext && (
+            <span
+              className="format-badge format-badge--vision"
+              title="Generated using Gemini Vision on captured screen"
+            >
+              <span className="format-badge__icon">🖼️</span>
+              Screen Vision
+            </span>
+          )}
           <span className={`format-badge ${formatConfig.badgeClass}`}>
             <span className="format-badge__icon">{formatConfig.icon}</span>
             {formatConfig.label}

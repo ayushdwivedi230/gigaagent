@@ -4,6 +4,7 @@ import { useAssistant } from './state/useAssistant';
 import { useElapsed } from './state/useElapsed';
 import { Header } from './components/Header';
 import { AudioBar } from './components/AudioBar';
+import { ScreenCapturePanel } from './components/ScreenCapturePanel';
 import { AnswerCard } from './components/AnswerCard';
 import { AskAiInput } from './components/AskAiInput';
 import { TranscriptPanel } from './components/TranscriptPanel';
@@ -86,6 +87,29 @@ export default function App() {
 
       {/* ── Main AI Answer Panel (Highest Visual Priority) ── */}
       <main className="copilot-main">
+        {/* ── Screen Intelligence & Visual Context ── */}
+        <ScreenCapturePanel
+          sources={assistant.screenSources}
+          selectedSourceId={assistant.selectedSourceId}
+          onSelectSource={assistant.setSelectedSourceId}
+          pendingScreenshot={assistant.pendingScreenshot}
+          activeScreenshot={assistant.activeScreenshot}
+          isCapturing={assistant.isCapturingScreen}
+          onCapture={async (srcId) => {
+            await assistant.captureScreen(srcId);
+          }}
+          onConfirm={async (id) => {
+            await assistant.confirmScreenshot(id);
+          }}
+          onDiscard={async (id) => {
+            await assistant.discardScreenshot(id);
+          }}
+          onClearContext={async () => {
+            await assistant.clearScreenContext();
+          }}
+          onRefreshSources={assistant.loadScreenSources}
+        />
+
         <AnswerCard
           answer={assistant.activeAnswer}
           isGenerating={assistant.isGeneratingAnswer}
@@ -99,6 +123,7 @@ export default function App() {
           isGenerating={assistant.isGeneratingAnswer}
           autoAnswer={assistant.autoAnswer}
           onToggleAutoAnswer={assistant.setAutoAnswer}
+          hasVisualContext={Boolean(assistant.activeScreenshot)}
         />
 
         {/* ── Separate Transcript Log ── */}

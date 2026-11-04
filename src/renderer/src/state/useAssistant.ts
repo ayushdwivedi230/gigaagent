@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { applySegment } from '@shared/transcript';
 import type {
   ClientSettings,
+  DesktopSourceInfo,
   Result,
+  ScreenshotData,
   SessionDetail,
   SessionMode,
   SessionSnapshot,
@@ -52,6 +54,18 @@ export interface AssistantState {
     question: string,
     options?: { mode?: SessionMode; context?: string; formatType?: string },
   ) => Promise<SuggestionItem | undefined>;
+  screenSources: DesktopSourceInfo[];
+  selectedSourceId: string | undefined;
+  setSelectedSourceId: (id: string | undefined) => void;
+  pendingScreenshot: ScreenshotData | null;
+  activeScreenshot: ScreenshotData | null;
+  isCapturingScreen: boolean;
+  loadScreenSources: () => Promise<void>;
+  captureScreen: (sourceId?: string) => Promise<ScreenshotData | undefined>;
+  confirmScreenshot: (id: string) => Promise<boolean>;
+  discardScreenshot: (id?: string) => Promise<void>;
+  clearScreenContext: () => Promise<void>;
+  analyzeScreen: (question: string) => Promise<SuggestionItem | undefined>;
 }
 
 export function useAssistant(): AssistantState {
@@ -65,6 +79,13 @@ export function useAssistant(): AssistantState {
   const [viewing, setViewing] = useState<SessionDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<ClientSettings | null>(null);
+
+  // Screen intelligence state
+  const [screenSources, setScreenSources] = useState<DesktopSourceInfo[]>([]);
+  const [selectedSourceId, setSelectedSourceId] = useState<string | undefined>(undefined);
+  const [pendingScreenshot, setPendingScreenshot] = useState<ScreenshotData | null>(null);
+  const [activeScreenshot, setActiveScreenshot] = useState<ScreenshotData | null>(null);
+  const [isCapturingScreen, setIsCapturingScreen] = useState(false);
 
   /** Unwraps an IPC Result; surfaces failures as a user-facing message. */
   const call = useCallback(async <T,>(request: Promise<Result<T>>): Promise<T | undefined> => {
@@ -111,6 +132,12 @@ export function useAssistant(): AssistantState {
     })();
     void refreshHistory();
     void loadSettings();
+    void (async () => {
+      const sources = await call(api.screen.getSources());
+      if (sources && !disposed) setScreenSources(sources);
+      const activeCtx = await call(api.screen.getContext());
+      if (activeCtx && !disposed) setActiveScreenshot(activeCtx);
+    })();
 
     const unsubscribe = api.onEvent((event) => {
       switch (event.type) {
@@ -318,6 +345,84 @@ export function useAssistant(): AssistantState {
     [call],
   );
 
+  const loadScreenSources = useCallback(async () => {
+    if (!api) return;
+    const sources = await call(api.screen.getSources());
+    if (sources) setScreenSources(sources);
+  }, [call]);
+
+  const captureScreen = useCallback(
+    async (sourceId?: string) => {
+      if (!api) {
+        setError(DESKTOP_REQUIRED_ERROR);
+        return undefined;
+      }
+      setIsCapturingScreen(true);
+      try {
+        const shot = await call(api.screen.capture(sourceId ?? selectedSourceId));
+        if (shot) {
+          setPendingScreenshot(shot);
+          return shot;
+        }
+      } finally {
+        setIsCapturingScreen(false);
+      }
+      return undefined;
+    },
+    [call, selectedSourceId],
+  );
+
+  const confirmScreenshot = useCallback(
+    async (id: string) => {
+      if (!api) return false;
+      const res = await call(api.screen.confirm(id));
+      if (res?.confirmed) {
+        setActiveScreenshot(pendingScreenshot);
+        setPendingScreenshot(null);
+        return true;
+      }
+      return false;
+    },
+    [call, pendingScreenshot],
+  );
+
+  const discardScreenshot = useCallback(
+    async (id?: string) => {
+      if (!api) return;
+      await call(api.screen.discard(id));
+      setPendingScreenshot(null);
+    },
+    [call],
+  );
+
+  const clearScreenContext = useCallback(async () => {
+    if (!api) return;
+    await call(api.screen.clearContext());
+    setActiveScreenshot(null);
+    setPendingScreenshot(null);
+  }, [call]);
+
+  const analyzeScreen = useCallback(
+    async (question: string) => {
+      if (!api) {
+        setError(DESKTOP_REQUIRED_ERROR);
+        return undefined;
+      }
+      setIsGeneratingAnswer(true);
+      try {
+        const item = await call(api.screen.analyze({ question }));
+        if (item) {
+          setActiveAnswer(item);
+          return item;
+        }
+      } finally {
+        setIsGeneratingAnswer(false);
+      }
+      return undefined;
+    },
+    [call],
+  );
+
   return {
     snapshot,
     history,
@@ -343,5 +448,17 @@ export function useAssistant(): AssistantState {
     saveSettings,
     testGemini,
     askAi,
+    screenSources,
+    selectedSourceId,
+    setSelectedSourceId,
+    pendingScreenshot,
+    activeScreenshot,
+    isCapturingScreen,
+    loadScreenSources,
+    captureScreen,
+    confirmScreenshot,
+    discardScreenshot,
+    clearScreenContext,
+    analyzeScreen,
   };
 }
