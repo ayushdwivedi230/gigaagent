@@ -8,6 +8,7 @@ import type {
 } from '@shared/types';
 import type { SettingsService } from './settingsService';
 import type { ScreenContextManager } from './screenContextManager';
+import { ResponseOrchestrator } from './intelligence/responseOrchestrator';
 import { logDiag } from './diagnosticsLogger';
 
 export interface SuggestionServiceOptions {
@@ -29,6 +30,7 @@ export class SuggestionService {
   private readonly settingsService: SettingsService;
   private readonly onSuggestion: (suggestion: SuggestionItem) => void;
   private readonly screenContextManager?: ScreenContextManager;
+  private readonly orchestrator: ResponseOrchestrator;
   private readonly debounceMs: number;
   private readonly minIntervalMs: number;
 
@@ -47,16 +49,35 @@ export class SuggestionService {
     this.screenContextManager = options.screenContextManager;
     this.debounceMs = options.debounceMs ?? 2000;
     this.minIntervalMs = options.minIntervalMs ?? 6000; // 6s cooldown for faster response while respecting quota
+
+    this.orchestrator = new ResponseOrchestrator({
+      onEmitSuggestion: (item) => this.emit(item),
+      geminiRequester: async (prompt, screenBase64) => {
+        const apiKey = this.settingsService.getEffectiveGeminiKey();
+        if (!apiKey) {
+          throw new Error('No Gemini API key is configured.');
+        }
+        if (screenBase64) {
+          return this.dispatchGeminiVisionRequest(apiKey, prompt, screenBase64);
+        }
+        return this.dispatchGeminiRequest(apiKey, prompt);
+      },
+    });
+  }
+
+  getOrchestrator(): ResponseOrchestrator {
+    return this.orchestrator;
   }
 
   setSession(sessionId: string | null, mode: SessionMode = 'mock-interview'): void {
-    if (this.activeSessionId !== sessionId) {
+    if (this.activeSessionId !== sessionId || this.currentMode !== mode) {
       this.activeSessionId = sessionId;
       this.currentMode = mode;
       this.accumulatedSegments = [];
       this.suggestionCounter = 0;
       this.lastQueryTimestamp = 0;
       this.lastQueriedText = '';
+      this.orchestrator.setSession(sessionId, mode);
       if (this.debounceTimer) {
         clearTimeout(this.debounceTimer);
         this.debounceTimer = null;
@@ -110,16 +131,11 @@ export class SuggestionService {
       .join(' ')
       .trim();
 
-    const questionPatterns = [
-      /\?$/,
-      /\b(how|what|why|when|where|who|which)\b/i,
-      /\b(can you|could you|would you|explain|describe|tell me about|walk me through)\b/i,
-      /\b(difference between|trade-offs? between|compare|pros and cons)\b/i,
-      /\b(how do you|how would you|what is the best way to)\b/i,
-    ];
-
+    const detection = this.orchestrator.detector.detect(combined);
+    const intentMeta = this.orchestrator.classifier.classify(combined);
     const isQuestion =
-      last.speaker === 'system' || questionPatterns.some((pattern) => pattern.test(combined));
+      (detection.isQuestionOrInstruction || last.speaker === 'system') &&
+      intentMeta.intent !== 'ACKNOWLEDGEMENT';
 
     return {
       isQuestion,
@@ -145,6 +161,7 @@ export class SuggestionService {
     }
 
     const recentSegments = this.accumulatedSegments.slice(-6);
+    const lastSeg = recentSegments[recentSegments.length - 1]!;
     const recentText = recentSegments
       .map((s) => `${s.speaker === 'system' ? '[Interviewer/Meeting]' : '[Candidate/You]'}: ${s.text}`)
       .join('\n')
@@ -173,7 +190,15 @@ export class SuggestionService {
       });
 
       if (apiKey) {
-        await this.queryGemini(apiKey, recentText, intent);
+        const activeScreen = this.screenContextManager?.getConfirmed();
+        await this.orchestrator.processUtterance({
+          text: lastSeg.text,
+          speaker: lastSeg.speaker,
+          mode: this.currentMode,
+          context: recentText,
+          sessionId: this.activeSessionId ?? undefined,
+          screenshotBase64: activeScreen?.base64,
+        });
       } else {
         logDiag('AIDiag:Fallback', 'No Gemini API key configured, generating heuristic suggestion');
         this.generateHeuristicSuggestion(recentText, intent);
@@ -283,15 +308,6 @@ Return ONLY a valid JSON object matching this schema:
       ignoreScreenContext?: boolean;
     },
   ): Promise<Result<SuggestionItem>> {
-    // If active confirmed screen context exists and not explicitly ignored, route to analyzeScreenshot
-    if (!options?.ignoreScreenContext && this.screenContextManager?.hasContext()) {
-      return this.analyzeScreenshot({
-        question,
-        mode: options?.mode,
-        context: options?.context,
-      });
-    }
-
     const apiKey = this.settingsService.getEffectiveGeminiKey();
     if (!apiKey) {
       return {
@@ -304,89 +320,35 @@ Return ONLY a valid JSON object matching this schema:
     }
 
     const mode = options?.mode ?? this.currentMode ?? 'mock-interview';
-    const recentContext =
-      options?.context ??
-      this.accumulatedSegments
-        .slice(-6)
-        .map((s) => `${s.speaker === 'system' ? 'Meeting/Interviewer' : 'You'}: ${s.text}`)
-        .join('\n')
-        .trim();
+    const activeScreen = !options?.ignoreScreenContext
+      ? this.screenContextManager?.getConfirmed()
+      : null;
 
-    logDiag('AIDiag:AskAi', 'Executing Ask AI query', { question, mode, hasContext: Boolean(recentContext) });
+    const res = await this.orchestrator.processUtterance({
+      text: question,
+      isManual: true,
+      mode,
+      context: options?.context,
+      sessionId: this.activeSessionId ?? undefined,
+      screenshotBase64: activeScreen?.base64,
+    });
 
-    let modeInstruction = '';
-    if (mode === 'mock-interview') {
-      modeInstruction = `Role: Technical Interview Candidate Copilot.
-Provide a high-scoring, articulate response:
-1. Direct Answer (1-2 sentences delivering the core concept immediately).
-2. Key Points / STAR Breakdown (3-4 crisp bullet points detailing mechanism, implementation, or trade-offs).
-3. Edge Case / Pro-Tip (1 sentence on production considerations or best practices).`;
-    } else if (mode === 'meeting') {
-      modeInstruction = `Role: Strategic Meeting Copilot.
-Provide a concise, high-impact contribution:
-1. Executive Summary / Position (1-2 clear sentences).
-2. Key Talking Points & Action Items (3-4 crisp bullets).
-3. Strategic Considerations (Key risks or next steps).`;
-    } else {
-      modeInstruction = `Role: Expert Technical Copilot.
-Provide an authoritative, clear breakdown:
-1. Core Explanation (1-2 sentences summarizing the concept).
-2. Key Differences / Bulleted Details (3-4 concise points).
-3. Practical Takeaway or Example.`;
-    }
-
-    const systemPrompt = `${modeInstruction}
-
-${recentContext ? `Recent Conversation Context:\n${recentContext}\n` : ''}
-Question / Prompt:
-"${question}"
-
-Return ONLY a valid JSON object matching this schema:
-{
-  "title": "Concise topic title (under 40 chars)",
-  "formatType": "technical",
-  "content": "Full formatted response using standard Markdown (bullet points, bold highlights, concise paragraphs). Keep it under 600 characters so it can be read in 20 seconds."
-}`;
-
-    try {
-      const { text, modelUsed } = await this.dispatchGeminiRequest(apiKey, systemPrompt);
-      const parsed = this.parseGeminiJson(text);
-
-      const item: SuggestionItem = {
-        id: `ask_${Date.now()}_${++this.suggestionCounter}`,
-        sessionId: this.activeSessionId || 'manual_query',
-        createdAt: new Date().toISOString(),
-        type: 'answer_tip',
-        title: parsed.title || 'AI Answer',
-        content: parsed.content || text,
-        source: 'gemini',
-        isQuestion: true,
-        question,
-        formatType:
-          (parsed.formatType as any) ||
-          (mode === 'mock-interview' ? 'interview' : mode === 'meeting' ? 'meeting' : 'technical'),
-        modelUsed,
-      };
-
-      logDiag('AIDiag:AskAi', 'Ask AI query completed successfully', {
-        id: item.id,
-        modelUsed,
-        title: item.title,
-      });
-
-      this.emit(item);
-      return { ok: true, value: item };
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      logDiag('AIDiag:AskAi', 'Ask AI query failed', { error: errMsg });
+    if (!res.ok) return res;
+    if (!res.value) {
       return {
-        ok: false,
-        error: {
-          code: 'SOURCE_FAILED',
-          message: `AI generation failed: ${errMsg}`,
+        ok: true,
+        value: {
+          id: `dup_${Date.now()}`,
+          sessionId: this.activeSessionId || 'manual_query',
+          createdAt: new Date().toISOString(),
+          type: 'answer_tip',
+          title: 'Duplicate Query',
+          content: 'This question was already answered recently.',
+          source: 'gemini',
         },
       };
     }
+    return { ok: true, value: res.value };
   }
 
   /**
@@ -433,111 +395,32 @@ Return ONLY a valid JSON object matching this schema:
     }
 
     const mode = request.mode ?? this.currentMode ?? 'mock-interview';
-    const recentContext =
-      request.context ??
-      this.accumulatedSegments
-        .slice(-6)
-        .map((s) => `${s.speaker === 'system' ? 'Meeting/Interviewer' : 'You'}: ${s.text}`)
-        .join('\n')
-        .trim();
-
-    const turns = this.screenContextManager?.getTurns() ?? [];
-    const turnHistoryText =
-      turns.length > 0
-        ? `Prior Visual Q&A Turns on this screen:\n${turns
-            .map((t, idx) => `Turn ${idx + 1}:\nQ: ${t.question}\nA: ${t.answer}`)
-            .join('\n\n')}\n`
-        : '';
-
-    logDiag('AIDiag:Vision', 'Analyzing screenshot with Gemini Vision', {
-      question: request.question,
-      screenshotId: screenshot.id,
-      turnsCount: turns.length,
+    const res = await this.orchestrator.processUtterance({
+      text: request.question,
+      isManual: true,
       mode,
+      context: request.context,
+      sessionId: this.activeSessionId ?? undefined,
+      screenshotBase64: screenshot.base64,
     });
 
-    const systemPrompt = `You are GigaAgent, an elite real-time desktop AI copilot with multimodal screen intelligence.
-You are assisting the user during a ${mode}.
-Analyze the attached high-resolution screen image with rigorous technical accuracy.
-
-The screen may display:
-- Code editor / IDE (source code, syntax/runtime bugs, stack traces, compiler output)
-- Coding problems (LeetCode, HackerRank, DSA challenges, constraints, input/output examples)
-- Terminal / command line output (errors, logs, git operations, deployment issues)
-- Architecture diagrams, system designs, UML schemas, flowcharts
-- Web applications, responsive UI layouts, CSS/HTML structures
-- Tables, financial metrics, technical documentation, spreadsheets
-
-Instructions:
-1. Direct Answer: Answer the user's specific question or instruction authoritatively.
-2. If code/debugging: Pinpoint the exact root cause, line number(s), and provide the clean, corrected code in a markdown code block (\`\`\`<lang> ... \`\`\`).
-3. If DSA problem: Provide the optimal algorithmic approach, time and space complexity in Big-O notation, key edge cases, and concise implementation.
-4. If Architecture/Diagram: Deconstruct components, message flow, bottlenecks, and single points of failure.
-5. If UI/Design: Provide actionable suggestions for accessibility, layout hierarchy, and responsive CSS.
-6. Format cleanly using standard Markdown: bold highlights, bullet points, and code blocks.
-
-${turnHistoryText}
-${recentContext ? `Recent Conversation Transcript:\n${recentContext}\n` : ''}
-User Question / Instruction:
-"${request.question}"
-
-Return ONLY a valid JSON object matching this schema:
-{
-  "title": "Concise topic title (under 40 chars)",
-  "formatType": "technical",
-  "content": "Comprehensive markdown response with bold highlights, bullet points, and code fences. Ensure code snippets are complete and runnable."
-}`;
-
-    try {
-      const { text, modelUsed } = await this.dispatchGeminiVisionRequest(
-        apiKey,
-        systemPrompt,
-        screenshot.base64,
-      );
-      const parsed = this.parseGeminiJson(text);
-
-      const content = parsed.content || text;
-      const title = parsed.title || 'Screen Intelligence';
-
-      // Record in multi-turn history
-      this.screenContextManager?.addTurn(request.question, content);
-
-      const item: SuggestionItem = {
-        id: `vis_${Date.now()}_${++this.suggestionCounter}`,
-        sessionId: this.activeSessionId || 'screen_query',
-        createdAt: new Date().toISOString(),
-        type: 'answer_tip',
-        title,
-        content,
-        source: 'gemini',
-        isQuestion: true,
-        question: request.question,
-        formatType:
-          (parsed.formatType as any) ||
-          (mode === 'mock-interview' ? 'interview' : 'technical'),
-        modelUsed,
-        hasVisualContext: true,
-      };
-
-      logDiag('AIDiag:Vision', 'Gemini Vision analysis completed successfully', {
-        id: item.id,
-        modelUsed,
-        title: item.title,
-      });
-
-      this.emit(item);
-      return { ok: true, value: item };
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      logDiag('AIDiag:Vision', 'Gemini Vision analysis failed', { error: errMsg });
+    if (!res.ok) return res;
+    if (!res.value) {
       return {
-        ok: false,
-        error: {
-          code: 'SOURCE_FAILED',
-          message: `Screen analysis failed: ${errMsg}`,
+        ok: true,
+        value: {
+          id: `vis_dup_${Date.now()}`,
+          sessionId: this.activeSessionId || 'screen_query',
+          createdAt: new Date().toISOString(),
+          type: 'answer_tip',
+          title: 'Screen Analysis',
+          content: 'This screen question was recently analyzed.',
+          source: 'gemini',
+          hasVisualContext: true,
         },
       };
     }
+    return { ok: true, value: res.value };
   }
 
   /**

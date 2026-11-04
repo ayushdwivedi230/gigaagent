@@ -39,9 +39,12 @@ export interface SuggestionItem {
   source?: 'gemini' | 'heuristic' | 'test';
   isQuestion?: boolean;
   question?: string;
-  formatType?: 'direct' | 'technical' | 'interview' | 'star' | 'followup' | 'meeting' | 'points';
+  formatType?: 'direct' | 'technical' | 'interview' | 'star' | 'followup' | 'meeting' | 'points' | 'code' | 'dsa';
   modelUsed?: string;
   hasVisualContext?: boolean;
+  intent?: string;
+  programmingLanguage?: string;
+  followUpSuggestions?: string[];
 }
 
 export interface DesktopSourceInfo {

@@ -238,3 +238,4 @@ export function ScreenCapturePanel({
     </section>
   );
 }
+

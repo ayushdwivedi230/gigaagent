@@ -6,6 +6,7 @@ interface AnswerCardProps {
   isGenerating: boolean;
   onRegenerate?: (question: string) => void;
   onClear?: () => void;
+  onAskFollowUp?: (question: string) => void;
 }
 
 const FORMAT_LABELS: Record<string, { label: string; icon: string; badgeClass: string }> = {
@@ -16,12 +17,16 @@ const FORMAT_LABELS: Record<string, { label: string; icon: string; badgeClass: s
   meeting: { label: 'Meeting Insight', icon: '📋', badgeClass: 'format-badge--meeting' },
   points: { label: 'Talking Points', icon: '💬', badgeClass: 'format-badge--points' },
   followup: { label: 'Follow-Up', icon: '🔍', badgeClass: 'format-badge--followup' },
+  code: { label: 'Code Implementation', icon: '💻', badgeClass: 'format-badge--code' },
+  dsa: { label: 'DSA Problem Solution', icon: '🧩', badgeClass: 'format-badge--dsa' },
 };
 
 const DEFAULT_FORMAT = { label: 'Technical Explanation', icon: '💡', badgeClass: 'format-badge--tech' };
 
-export function AnswerCard({ answer, isGenerating, onRegenerate, onClear }: AnswerCardProps) {
+export function AnswerCard({ answer, isGenerating, onRegenerate, onClear, onAskFollowUp }: AnswerCardProps) {
   const [copied, setCopied] = useState(false);
+  const [copiedCodeIdx, setCopiedCodeIdx] = useState<number | null>(null);
+  const [isExpanded, setIsExpanded] = useState(true);
   const [displayedContent, setDisplayedContent] = useState('');
 
   // Smooth typing effect when a fresh answer arrives
@@ -57,9 +62,16 @@ export function AnswerCard({ answer, isGenerating, onRegenerate, onClear }: Answ
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Fallback
       setCopied(false);
     }
+  };
+
+  const handleCopyCode = async (code: string, idx: number) => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopiedCodeIdx(idx);
+      setTimeout(() => setCopiedCodeIdx(null), 2000);
+    } catch {}
   };
 
   const handleRegenerate = () => {
@@ -82,6 +94,7 @@ export function AnswerCard({ answer, isGenerating, onRegenerate, onClear }: Answ
     const lines = displayedContent.split('\n');
     const elements: JSX.Element[] = [];
     let inCodeBlock = false;
+    let codeLanguage = '';
     let codeLines: string[] = [];
     let listItems: string[] = [];
 
@@ -100,12 +113,28 @@ export function AnswerCard({ answer, isGenerating, onRegenerate, onClear }: Answ
 
     const flushCodeBlock = () => {
       if (codeLines.length > 0) {
+        const fullCode = codeLines.join('\n');
+        const blockIdx = elements.length;
+        const langDisplay = codeLanguage || answer?.programmingLanguage || 'code';
         elements.push(
-          <pre key={`code-${elements.length}`} className="answer-code-block">
-            <code>{codeLines.join('\n')}</code>
-          </pre>,
+          <div key={`code-${blockIdx}`} className="answer-code-container">
+            <div className="answer-code-bar">
+              <span className="answer-code-lang">{langDisplay}</span>
+              <button
+                type="button"
+                className="answer-code-copy-btn"
+                onClick={() => handleCopyCode(fullCode, blockIdx)}
+              >
+                {copiedCodeIdx === blockIdx ? '✓ Copied' : 'Copy Code'}
+              </button>
+            </div>
+            <pre className="answer-code-block">
+              <code>{fullCode}</code>
+            </pre>
+          </div>,
         );
         codeLines = [];
+        codeLanguage = '';
       }
     };
 
@@ -119,6 +148,7 @@ export function AnswerCard({ answer, isGenerating, onRegenerate, onClear }: Answ
         } else {
           flushList();
           inCodeBlock = true;
+          codeLanguage = line.trim().replace(/^```/, '').trim();
         }
         continue;
       }
@@ -170,7 +200,7 @@ export function AnswerCard({ answer, isGenerating, onRegenerate, onClear }: Answ
     flushCodeBlock();
 
     return elements;
-  }, [displayedContent]);
+  }, [displayedContent, copiedCodeIdx, answer?.programmingLanguage]);
 
   if (!answer && !isGenerating) {
     return (
@@ -198,6 +228,11 @@ export function AnswerCard({ answer, isGenerating, onRegenerate, onClear }: Answ
             >
               <span className="format-badge__icon">🖼️</span>
               Screen Vision
+            </span>
+          )}
+          {answer?.programmingLanguage && (
+            <span className="format-badge format-badge--lang">
+              {answer.programmingLanguage.toUpperCase()}
             </span>
           )}
           <span className={`format-badge ${formatConfig.badgeClass}`}>
@@ -265,7 +300,11 @@ export function AnswerCard({ answer, isGenerating, onRegenerate, onClear }: Answ
       )}
 
       {/* ── Formatted Answer Body ── */}
-      <div className="answer-body" role="region" aria-live="polite">
+      <div
+        className={`answer-body${!isExpanded ? ' answer-body--collapsed' : ''}`}
+        role="region"
+        aria-live="polite"
+      >
         {renderedContent}
         {isGenerating && (
           <div className="answer-loading-indicator">
@@ -274,6 +313,39 @@ export function AnswerCard({ answer, isGenerating, onRegenerate, onClear }: Answ
           </div>
         )}
       </div>
+
+      {/* ── Expand/Collapse for long answers ── */}
+      {answer?.content && answer.content.length > 500 && (
+        <div className="answer-expand-bar">
+          <button
+            type="button"
+            className="answer-expand-btn"
+            onClick={() => setIsExpanded((prev) => !prev)}
+          >
+            {isExpanded ? '▲ Collapse' : '▼ Expand Full Answer'}
+          </button>
+        </div>
+      )}
+
+      {/* ── Quick Follow-Up Questions ── */}
+      {answer?.followUpSuggestions && answer.followUpSuggestions.length > 0 && (
+        <div className="answer-followups">
+          <span className="answer-followups__label">Follow-ups:</span>
+          <div className="answer-followups__list">
+            {answer.followUpSuggestions.map((fu, idx) => (
+              <button
+                key={idx}
+                type="button"
+                className="answer-followup-pill"
+                onClick={() => onAskFollowUp?.(fu)}
+                title={`Ask: "${fu}"`}
+              >
+                💬 {fu}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

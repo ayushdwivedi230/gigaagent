@@ -115,6 +115,7 @@ export default function App() {
           isGenerating={assistant.isGeneratingAnswer}
           onRegenerate={handleRegenerate}
           onClear={assistant.clearAnswer}
+          onAskFollowUp={handleAskQuestion}
         />
 
         {/* ── One-Click Ask AI Bar ── */}
