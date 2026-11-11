@@ -455,10 +455,12 @@ Return ONLY a valid JSON object matching this schema:
     base64Image: string,
   ): Promise<{ text: string; modelUsed: string }> {
     const candidateModels = [
-      'gemini-flash-lite-latest',
-      'gemini-3.5-flash-lite',
-      'gemini-flash-latest',
-      'gemini-3.8-flash',
+      'gemini-2.0-flash',
+      'gemini-2.0-flash-lite',
+      'gemini-2.5-flash',
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-flash',
+      'gemini-1.5-pro',
     ];
     let lastError: Error | null = null;
     let attempt = 0;
@@ -564,10 +566,12 @@ Return ONLY a valid JSON object matching this schema:
     prompt: string,
   ): Promise<{ text: string; modelUsed: string }> {
     const candidateModels = [
-      'gemini-flash-lite-latest',
-      'gemini-3.5-flash-lite',
-      'gemini-flash-latest',
-      'gemini-3.8-flash',
+      'gemini-2.0-flash',
+      'gemini-2.0-flash-lite',
+      'gemini-2.5-flash',
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-flash',
+      'gemini-1.5-pro',
     ];
     let lastError: Error | null = null;
     let attempt = 0;

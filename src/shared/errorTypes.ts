@@ -28,3 +28,4 @@ export interface DiagnosticsSnapshot {
   lastError?: ClassifiedError;
   uptimeSeconds: number;
 }
+
