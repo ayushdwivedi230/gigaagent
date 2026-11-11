@@ -22,6 +22,12 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
   private currentSegmentId = '';
   private segmentCount = 0;
 
+  // Bounded exponential backoff reconnection
+  private reconnectAttempts = 0;
+  private readonly MAX_RECONNECT_ATTEMPTS = 3;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private isReconnecting = false;
+
   // Bounded buffer for chunks waiting for WebSocket connection (max 5 seconds @ 32KB/s = ~160KB)
   private readonly MAX_BUFFER_BYTES = 160 * 1024;
   private pendingBytes = 0;
@@ -108,6 +114,20 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
   }
 
   private connectDeepgram(apiKey: string): void {
+    if (!this.running) return;
+
+    // Clean up any stale or previous socket cleanly before creating new connection
+    if (this.ws) {
+      try {
+        this.ws.onopen = null;
+        this.ws.onmessage = null;
+        this.ws.onerror = null;
+        this.ws.onclose = null;
+        this.ws.close();
+      } catch {}
+      this.ws = null;
+    }
+
     try {
       const cleanKey = apiKey.trim();
       const url =
@@ -128,6 +148,9 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
 
       ws.onopen = () => {
         if (!this.running || this.ws !== ws) return;
+        this.reconnectAttempts = 0;
+        this.isReconnecting = false;
+
         // Flush pending queued chunks
         while (this.pendingChunks.length > 0) {
           const chunk = this.pendingChunks.shift();
@@ -153,8 +176,24 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
       };
 
       ws.onclose = (event) => {
-        if (!this.running) return;
+        if (!this.running || this.ws !== ws) return;
+
         if (event.code !== 1000 && event.code !== 1005) {
+          if (this.reconnectAttempts < this.MAX_RECONNECT_ATTEMPTS && !this.isReconnecting) {
+            this.reconnectAttempts++;
+            this.isReconnecting = true;
+            const delay = Math.min(4000, 1000 * Math.pow(2, this.reconnectAttempts - 1));
+            console.warn(`[MicrophoneTranscriptSource] Connection lost (${event.code}). Retrying reconnect (${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS}) in ${delay}ms...`);
+            this.reconnectTimer = setTimeout(() => {
+              this.reconnectTimer = null;
+              this.isReconnecting = false;
+              if (this.running) {
+                this.connectDeepgram(apiKey);
+              }
+            }, delay);
+            return;
+          }
+
           this.emitError?.({
             code: 'SOURCE_FAILED',
             message: `STT connection closed (${event.code}): ${event.reason || 'Network error'}. Switching to audio detection.`,
@@ -278,6 +317,13 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
     this.running = false;
     this.emitSegment = undefined;
     this.emitError = undefined;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.isReconnecting = false;
+    this.reconnectAttempts = 0;
 
     if (this.keepAliveTimer) {
       clearInterval(this.keepAliveTimer);

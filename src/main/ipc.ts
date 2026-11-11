@@ -10,6 +10,7 @@ import type { SystemAudioGate } from './services/systemAudioGate';
 import type { SuggestionService } from './services/suggestionService';
 import type { ScreenCaptureService } from './services/screenCaptureService';
 import type { ScreenContextManager } from './services/screenContextManager';
+import type { DiagnosticsService } from './services/diagnosticsService';
 import { logDiag } from './services/diagnosticsLogger';
 
 /**
@@ -25,6 +26,7 @@ export function registerIpc(
   suggestionService?: SuggestionService,
   screenCaptureService?: ScreenCaptureService,
   screenContextManager?: ScreenContextManager,
+  diagnosticsService?: DiagnosticsService,
 ): () => void {
   const trusted = (event: IpcMainInvokeEvent | IpcMainEvent): boolean =>
     !win.isDestroyed() && event.sender === win.webContents;
@@ -166,6 +168,18 @@ export function registerIpc(
       return err('INVALID_REQUEST', 'Question cannot be empty.');
     }
     return suggestionService.analyzeScreenshot(req);
+  });
+
+  handle(IPC.diagnosticsGet, () => {
+    return diagnosticsService
+      ? ok(diagnosticsService.getSnapshot())
+      : err('INTERNAL', 'Diagnostics service is unavailable.');
+  });
+
+  handle(IPC.diagnosticsExport, () => {
+    return diagnosticsService
+      ? ok(diagnosticsService.exportDiagnostics())
+      : err('INTERNAL', 'Diagnostics service is unavailable.');
   });
 
   ipcMain.on(IPC.diagLog, (_event, category: unknown, message: unknown, data: unknown) => {

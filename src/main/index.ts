@@ -16,6 +16,7 @@ import { SettingsService } from './services/settingsService';
 import { SuggestionService } from './services/suggestionService';
 import { ScreenCaptureService } from './services/screenCaptureService';
 import { ScreenContextManager } from './services/screenContextManager';
+import { DiagnosticsService } from './services/diagnosticsService';
 import { initDiagnosticsLogger, logDiag } from './services/diagnosticsLogger';
 import type { SessionSnapshot } from '@shared/types';
 
@@ -24,6 +25,7 @@ let settingsService: SettingsService;
 let repository: SessionRepository;
 let service: SessionService;
 let suggestionService: SuggestionService;
+let diagnosticsService: DiagnosticsService;
 const systemAudioGate = new SystemAudioGate();
 const screenContextManager = new ScreenContextManager();
 const screenCaptureService = new ScreenCaptureService();
@@ -31,16 +33,40 @@ const screenCaptureService = new ScreenCaptureService();
 async function initServices(): Promise<void> {
   const userDataDir = app.getPath('userData');
   initDiagnosticsLogger(userDataDir);
+  diagnosticsService = new DiagnosticsService({ userDataDir });
   logDiag('Lifecycle', 'Initializing services in main process', { userDataDir });
+
+  process.on('uncaughtException', (err) => {
+    logDiag('Process:UncaughtException', 'Unhandled exception in main process', {
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
+    diagnosticsService?.recordError('LIFECYCLE', 'Internal error occurred in main process', String(err));
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    logDiag('Process:UnhandledRejection', 'Unhandled promise rejection in main process', {
+      reason: reason instanceof Error ? reason.message : String(reason),
+      stack: reason instanceof Error ? reason.stack : undefined,
+    });
+    diagnosticsService?.recordError('LIFECYCLE', 'Unhandled background task error', String(reason));
+  });
+
   const settingsPath = path.join(userDataDir, 'settings.json');
   settingsService = new SettingsService(settingsPath, safeStorage);
+  if (settingsService.getEffectiveGeminiKey()) {
+    diagnosticsService.setAiStatus('configured');
+  }
 
   const dbPath = path.join(userDataDir, 'sessions.db');
   try {
     repository = await SqliteSessionRepository.create({ filePath: dbPath });
+    diagnosticsService.setDatabaseHealth(repository.getHealth?.() ?? 'healthy');
   } catch (err) {
     console.error('[Main] Failed to initialize SQLite repository, falling back to in-memory', err);
     repository = new InMemorySessionRepository();
+    diagnosticsService.setDatabaseHealth('in_memory');
+    diagnosticsService.recordError('DATABASE', 'Failed to load SQLite file, running in-memory', String(err));
   }
 
   service = new SessionService({
@@ -72,12 +98,19 @@ async function initServices(): Promise<void> {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.setTitle(titleFor(event.snapshot));
       }
+      if (event.snapshot.status === 'active') {
+        diagnosticsService?.setAudioStatus('capturing');
+      } else if (event.snapshot.status === 'idle') {
+        diagnosticsService?.setAudioStatus('idle');
+      }
       suggestionService.setSession(
         event.snapshot.activeSession?.id ?? null,
         event.snapshot.activeSession?.mode ?? 'mock-interview',
       );
     } else if (event.type === 'segment') {
       suggestionService.handleSegment(event.segment);
+    } else if (event.type === 'error') {
+      diagnosticsService?.recordError('AUDIO', event.error.message);
     }
   });
 }
@@ -191,19 +224,61 @@ if (!app.requestSingleInstanceLock()) {
       suggestionService,
       screenCaptureService,
       screenContextManager,
+      diagnosticsService,
     );
+
+    win.webContents.on('render-process-gone', (_e, details) => {
+      logDiag('Process:RendererGone', 'Renderer process gone', {
+        reason: details.reason,
+        exitCode: details.exitCode,
+      });
+      diagnosticsService?.recordError('RENDERER', `Renderer process terminated: ${details.reason}`);
+      systemAudioGate.disarm();
+      suggestionService?.destroy();
+      void service?.stop();
+      screenContextManager.clear();
+    });
 
     win.on('closed', () => {
       mainWindow = null;
     });
   });
 
-  // Always release the audio source before the process goes away.
-  app.on('before-quit', () => {
+  app.on('child-process-gone', (_e, details) => {
+    logDiag('Process:ChildGone', 'Child process gone', {
+      type: details.type,
+      reason: details.reason,
+      exitCode: details.exitCode,
+      name: details.name,
+    });
+  });
+
+  // Always release all audio, WebSocket, database and screen resources cleanly on shutdown.
+  let isShuttingDown = false;
+  app.on('before-quit', (event) => {
+    if (isShuttingDown) return;
+    event.preventDefault();
+    isShuttingDown = true;
+
+    logDiag('Lifecycle', 'Graceful shutdown initiated: releasing all resources...');
     systemAudioGate.disarm();
     suggestionService?.destroy();
-    void service?.stop();
-    repository?.close?.();
+    screenContextManager.clear();
+
+    void Promise.resolve(service?.stop())
+      .catch((err) => console.warn('[Main] Error stopping session on quit', err))
+      .then(() => {
+        try {
+          repository?.flush?.();
+          repository?.close?.();
+        } catch (err) {
+          console.warn('[Main] Error closing repository on quit', err);
+        }
+      })
+      .finally(() => {
+        logDiag('Lifecycle', 'Cleanup finished. Exiting application.');
+        app.exit(0);
+      });
   });
   app.on('window-all-closed', () => app.quit());
 }

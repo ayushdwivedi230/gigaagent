@@ -45,6 +45,10 @@ const api: MeetingAssistantApi = {
     getContext: () => ipcRenderer.invoke(IPC.screenGetContext),
     analyze: (request) => ipcRenderer.invoke(IPC.screenAnalyze, request),
   },
+  diagnostics: {
+    get: () => ipcRenderer.invoke(IPC.diagnosticsGet),
+    export: () => ipcRenderer.invoke(IPC.diagnosticsExport),
+  },
   diag: {
     log: (category, message, data) => {
       ipcRenderer.send(IPC.diagLog, category, message, data);

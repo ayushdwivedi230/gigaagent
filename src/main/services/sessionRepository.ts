@@ -13,7 +13,9 @@ export interface SessionRepository {
   delete(id: string): boolean;
   /** Returns how many sessions were removed. */
   clear(): number;
+  flush?(): void;
   close?(): void;
+  getHealth?(): 'healthy' | 'recovered' | 'corrupted' | 'in_memory';
 }
 
 export class InMemorySessionRepository implements SessionRepository {

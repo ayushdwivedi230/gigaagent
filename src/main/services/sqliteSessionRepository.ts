@@ -87,37 +87,75 @@ export class SqliteSessionRepository implements SessionRepository {
   private db: SqlJsDatabase;
   private readonly filePath: string | null;
   private isPersisting = false;
+  private hasPendingChanges = false;
+  private debounceTimer: NodeJS.Timeout | null = null;
+  private health: 'healthy' | 'recovered' | 'corrupted' | 'in_memory' = 'healthy';
 
-  private constructor(db: SqlJsDatabase, filePath: string | null) {
+  private constructor(
+    db: SqlJsDatabase,
+    filePath: string | null,
+    health: 'healthy' | 'recovered' | 'corrupted' | 'in_memory' = 'healthy',
+  ) {
     this.db = db;
     this.filePath = filePath;
+    this.health = health;
+  }
+
+  getHealth(): 'healthy' | 'recovered' | 'corrupted' | 'in_memory' {
+    return this.health;
   }
 
   static async create(options: SqliteRepositoryOptions = {}): Promise<SqliteSessionRepository> {
     const SQL = await initSqlJs();
     const filePath = options.filePath ?? null;
 
-    let db: SqlJsDatabase;
+    let db: SqlJsDatabase = new SQL.Database();
+    let health: 'healthy' | 'recovered' | 'corrupted' | 'in_memory' = filePath ? 'healthy' : 'in_memory';
 
     if (filePath && fs.existsSync(filePath)) {
       try {
         const fileBuffer = fs.readFileSync(filePath);
         db = new SQL.Database(fileBuffer);
         // Verify database integrity
-        db.exec('PRAGMA quick_check;');
+        const check = db.exec('PRAGMA quick_check;');
+        const checkResult = check[0]?.values?.[0]?.[0];
+        if (checkResult !== 'ok') {
+          throw new Error(`PRAGMA quick_check returned: ${checkResult}`);
+        }
       } catch (err) {
-        console.warn(`[SqliteSessionRepository] Corrupted database detected at ${filePath}. Creating backup.`, err);
-        try {
-          const backupPath = `${filePath}.corrupt.${Date.now()}`;
-          fs.renameSync(filePath, backupPath);
-        } catch {}
-        db = new SQL.Database();
+        console.warn(`[SqliteSessionRepository] Corrupted primary database detected at ${filePath}. Attempting backup recovery.`, err);
+        const backupPath = `${filePath}.bak`;
+        let recovered = false;
+
+        if (fs.existsSync(backupPath)) {
+          try {
+            const backupBuffer = fs.readFileSync(backupPath);
+            db = new SQL.Database(backupBuffer);
+            const check = db.exec('PRAGMA quick_check;');
+            if (check[0]?.values?.[0]?.[0] === 'ok') {
+              console.log(`[SqliteSessionRepository] Successfully recovered database from backup: ${backupPath}`);
+              health = 'recovered';
+              recovered = true;
+            }
+          } catch (bakErr) {
+            console.warn('[SqliteSessionRepository] Backup database also corrupted', bakErr);
+          }
+        }
+
+        if (!recovered) {
+          try {
+            const corruptPath = `${filePath}.corrupt.${Date.now()}`;
+            fs.renameSync(filePath, corruptPath);
+          } catch {}
+          db = new SQL.Database();
+          health = 'corrupted';
+        }
       }
     } else {
       db = new SQL.Database();
     }
 
-    const repository = new SqliteSessionRepository(db, filePath);
+    const repository = new SqliteSessionRepository(db, filePath, health);
     repository.initialize();
     return repository;
   }
@@ -257,7 +295,7 @@ export class SqliteSessionRepository implements SessionRepository {
       ],
     );
 
-    this.persist();
+    this.persist(false);
   }
 
   upsertSuggestion(suggestion: SuggestionItem): void {
@@ -401,15 +439,47 @@ export class SqliteSessionRepository implements SessionRepository {
     return count;
   }
 
+  flush(): void {
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    this.persist(true);
+  }
+
   close(): void {
-    this.persist();
+    this.flush();
     this.db.close();
   }
 
-  private persist(): void {
-    if (!this.filePath || this.isPersisting) return;
+  private persist(immediate = true): void {
+    if (!this.filePath) return;
+
+    this.hasPendingChanges = true;
+
+    if (!immediate) {
+      if (this.debounceTimer) return;
+      this.debounceTimer = setTimeout(() => {
+        this.debounceTimer = null;
+        this.executePersist();
+      }, 300);
+      return;
+    }
+
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+
+    this.executePersist();
+  }
+
+  private executePersist(): void {
+    if (!this.filePath || this.isPersisting || !this.hasPendingChanges) return;
 
     this.isPersisting = true;
+    this.hasPendingChanges = false;
+
     try {
       const dir = path.dirname(this.filePath);
       if (!fs.existsSync(dir)) {
@@ -422,10 +492,20 @@ export class SqliteSessionRepository implements SessionRepository {
 
       fs.writeFileSync(tmpPath, buffer);
       fs.renameSync(tmpPath, this.filePath);
+
+      // Maintain valid crash-safe backup copy
+      const bakPath = `${this.filePath}.bak`;
+      try {
+        fs.copyFileSync(this.filePath, bakPath);
+      } catch {}
     } catch (err) {
       console.error('[SqliteSessionRepository] Failed to write database to disk', err);
     } finally {
       this.isPersisting = false;
+      // If new writes arrived while exporting/writing, immediately persist the updated state
+      if (this.hasPendingChanges) {
+        this.executePersist();
+      }
     }
   }
 }

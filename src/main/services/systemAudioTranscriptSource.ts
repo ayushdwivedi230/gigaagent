@@ -28,6 +28,12 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
   private pendingBytes = 0;
   private pendingChunks: ArrayBuffer[] = [];
 
+  // Bounded exponential backoff reconnection
+  private reconnectAttempts = 0;
+  private readonly MAX_RECONNECT_ATTEMPTS = 3;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private isReconnecting = false;
+
   // Mock recognition state for offline / key-less mode
   private mockVoiceActive = false;
   private mockWordIndex = 0;
@@ -123,6 +129,19 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
   }
 
   private connectDeepgram(apiKey: string): void {
+    if (!this.running) return;
+
+    if (this.ws) {
+      try {
+        this.ws.onopen = null;
+        this.ws.onmessage = null;
+        this.ws.onerror = null;
+        this.ws.onclose = null;
+        this.ws.close();
+      } catch {}
+      this.ws = null;
+    }
+
     try {
       const cleanKey = apiKey.trim();
       const url =
@@ -142,12 +161,15 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
 
       ws.onopen = () => {
         logDiag('SysAudioDiag:11-MainSource', 'System audio Deepgram WebSocket connected (OPEN)');
-        if (!this.running) {
+        if (!this.running || this.ws !== ws) {
           try {
             ws.close();
           } catch {}
           return;
         }
+
+        this.reconnectAttempts = 0;
+        this.isReconnecting = false;
 
         // Flush queued buffer
         while (this.pendingChunks.length > 0) {
@@ -160,7 +182,7 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
       };
 
       ws.onmessage = (event: { data: string }) => {
-        if (!this.running) return;
+        if (!this.running || this.ws !== ws) return;
         try {
           const data = JSON.parse(event.data);
           this.handleDeepgramResponse(data);
@@ -171,10 +193,6 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
 
       ws.onerror = (err) => {
         console.error('[SystemAudioTranscriptSource] WebSocket error', err);
-        this.emitError?.({
-          code: 'SOURCE_FAILED',
-          message: 'System audio Deepgram connection error. Check your API key or network connection.',
-        });
       };
 
       ws.onclose = (event) => {
@@ -182,8 +200,25 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
           clearInterval(this.keepAliveTimer);
           this.keepAliveTimer = null;
         }
-        if (this.running && event.code !== 1000) {
-          console.warn('[SystemAudioTranscriptSource] WebSocket closed unexpectedly', event.code, event.reason);
+        if (!this.running || this.ws !== ws) return;
+
+        if (event.code !== 1000 && event.code !== 1005) {
+          if (this.reconnectAttempts < this.MAX_RECONNECT_ATTEMPTS && !this.isReconnecting) {
+            this.reconnectAttempts++;
+            this.isReconnecting = true;
+            const delay = Math.min(4000, 1000 * Math.pow(2, this.reconnectAttempts - 1));
+            console.warn(`[SystemAudioTranscriptSource] Connection closed (${event.code}). Retrying reconnect (${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS}) in ${delay}ms...`);
+            this.reconnectTimer = setTimeout(() => {
+              this.reconnectTimer = null;
+              this.isReconnecting = false;
+              if (this.running) {
+                this.connectDeepgram(apiKey);
+              }
+            }, delay);
+            return;
+          }
+
+          console.warn('[SystemAudioTranscriptSource] WebSocket closed unexpectedly after retries', event.code, event.reason);
           this.emitError?.({
             code: 'SOURCE_FAILED',
             message: `System audio transcription closed (code ${event.code}): ${event.reason || 'Network error'}.`,
@@ -309,6 +344,13 @@ export class SystemAudioTranscriptSource implements TranscriptSource {
 
   async stop(): Promise<void> {
     this.running = false;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.isReconnecting = false;
+    this.reconnectAttempts = 0;
 
     if (this.keepAliveTimer) {
       clearInterval(this.keepAliveTimer);

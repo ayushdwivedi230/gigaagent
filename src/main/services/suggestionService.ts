@@ -33,6 +33,7 @@ export class SuggestionService {
   private readonly orchestrator: ResponseOrchestrator;
   private readonly debounceMs: number;
   private readonly minIntervalMs: number;
+  private readonly activeAbortControllers: Set<AbortController> = new Set();
 
   private activeSessionId: string | null = null;
   private currentMode: SessionMode = 'mock-interview';
@@ -423,6 +424,28 @@ Return ONLY a valid JSON object matching this schema:
     return { ok: true, value: res.value };
   }
 
+  private createManagedAbortController(timeoutMs: number): AbortController {
+    const controller = new AbortController();
+    this.activeAbortControllers.add(controller);
+    const timer = setTimeout(() => {
+      controller.abort(new Error(`Gemini request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    controller.signal.addEventListener('abort', () => {
+      clearTimeout(timer);
+      this.activeAbortControllers.delete(controller);
+    });
+    return controller;
+  }
+
+  private abortAllRequests(): void {
+    for (const controller of this.activeAbortControllers) {
+      try {
+        controller.abort(new Error('Request cancelled by user or session shutdown.'));
+      } catch {}
+    }
+    this.activeAbortControllers.clear();
+  }
+
   /**
    * Dispatches multimodal generateContent request with automatic fallback across vision-capable models.
    */
@@ -438,12 +461,16 @@ Return ONLY a valid JSON object matching this schema:
       'gemini-3.8-flash',
     ];
     let lastError: Error | null = null;
+    let attempt = 0;
 
     for (const model of candidateModels) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      attempt++;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+      const controller = this.createManagedAbortController(20000);
       try {
         const response = await fetch(url, {
           method: 'POST',
+          signal: controller.signal,
           headers: {
             'Content-Type': 'application/json',
             'x-goog-api-key': apiKey,
@@ -476,7 +503,7 @@ Return ONLY a valid JSON object matching this schema:
           const errBody = await response.text().catch(() => '');
           logDiag(
             'AIDiag:ModelFallback',
-            `Vision model ${model} returned HTTP ${response.status}, trying next candidate...`,
+            `Vision model ${model} returned HTTP ${response.status}, applying backoff...`,
             {
               model,
               status: response.status,
@@ -486,6 +513,10 @@ Return ONLY a valid JSON object matching this schema:
           lastError = new Error(
             `Vision model ${model} returned HTTP ${response.status}: ${errBody.slice(0, 100)}`,
           );
+          // Apply exponential backoff for rate limits or server overload
+          if (response.status === 429 || response.status === 503) {
+            await new Promise((r) => setTimeout(r, Math.min(2000, 500 * attempt)));
+          }
           continue;
         }
 
@@ -539,12 +570,16 @@ Return ONLY a valid JSON object matching this schema:
       'gemini-3.8-flash',
     ];
     let lastError: Error | null = null;
+    let attempt = 0;
 
     for (const model of candidateModels) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      attempt++;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+      const controller = this.createManagedAbortController(15000);
       try {
         const response = await fetch(url, {
           method: 'POST',
+          signal: controller.signal,
           headers: {
             'Content-Type': 'application/json',
             'x-goog-api-key': apiKey,
@@ -561,12 +596,15 @@ Return ONLY a valid JSON object matching this schema:
 
         if (response.status === 404 || response.status === 503 || response.status === 429) {
           const errBody = await response.text().catch(() => '');
-          logDiag('AIDiag:ModelFallback', `Model ${model} returned HTTP ${response.status}, trying next candidate...`, {
+          logDiag('AIDiag:ModelFallback', `Model ${model} returned HTTP ${response.status}, applying backoff...`, {
             model,
             status: response.status,
             details: errBody.slice(0, 100),
           });
           lastError = new Error(`Model ${model} returned HTTP ${response.status}: ${errBody.slice(0, 100)}`);
+          if (response.status === 429 || response.status === 503) {
+            await new Promise((r) => setTimeout(r, Math.min(2000, 500 * attempt)));
+          }
           continue;
         }
 
@@ -833,6 +871,7 @@ Return ONLY a valid JSON object matching this schema:
   }
 
   destroy(): void {
+    this.abortAllRequests();
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;

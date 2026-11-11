@@ -36,6 +36,8 @@ export const IPC = {
   screenClearContext: 'screen:clear-context',
   screenGetContext: 'screen:get-context',
   screenAnalyze: 'screen:analyze',
+  diagnosticsGet: 'diagnostics:get',
+  diagnosticsExport: 'diagnostics:export',
   diagLog: 'diag:log',
   event: 'session:event',
   windowMinimize: 'window:minimize',
@@ -87,6 +89,10 @@ export interface MeetingAssistantApi {
     clearContext(): Promise<Result<{ cleared: boolean }>>;
     getContext(): Promise<Result<ScreenshotData | null>>;
     analyze(request: ScreenAnalysisRequest): Promise<Result<SuggestionItem>>;
+  };
+  diagnostics: {
+    get(): Promise<Result<import('./errorTypes').DiagnosticsSnapshot>>;
+    export(): Promise<Result<{ exportedPath: string; content: string }>>;
   };
   diag: {
     log(category: string, message: string, data?: Record<string, unknown>): void;

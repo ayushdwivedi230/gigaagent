@@ -149,16 +149,23 @@ export function useAssistant(): AssistantState {
             setViewing(null);
           } else if (event.snapshot.status === 'idle') {
             audioCapture.stop();
+            systemAudioCapture.stop();
             void refreshHistory();
           } else {
             void refreshHistory();
           }
           break;
         case 'segment':
-          setLiveSegments((prev) => applySegment(prev, event.segment));
+          setLiveSegments((prev) => {
+            const updated = applySegment(prev, event.segment);
+            return updated.length > 500 ? updated.slice(-500) : updated;
+          });
           break;
         case 'suggestion':
-          setSuggestions((prev) => [event.suggestion, ...prev]);
+          setSuggestions((prev) => {
+            const next = [event.suggestion, ...prev];
+            return next.length > 100 ? next.slice(0, 100) : next;
+          });
           if (
             event.suggestion.type === 'answer_tip' ||
             event.suggestion.isQuestion ||
@@ -175,6 +182,7 @@ export function useAssistant(): AssistantState {
     return () => {
       disposed = true;
       audioCapture.stop();
+      systemAudioCapture.stop();
       unsubscribe();
     };
   }, [call, refreshHistory, loadSettings]);
