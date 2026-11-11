@@ -131,7 +131,7 @@ export class MicrophoneTranscriptSource implements TranscriptSource {
     try {
       const cleanKey = apiKey.trim();
       const url =
-        'wss://api.deepgram.com/v1/listen?encoding=linear16&sample_rate=16000&channels=1&interim_results=true&smart_format=true&model=nova-2';
+        'wss://api.deepgram.com/v1/listen?encoding=linear16&sample_rate=16000&channels=1&interim_results=true&smart_format=true&model=nova-2&endpointing=300&utterance_end_ms=1000';
 
       const ws = createDeepgramSocket(url, cleanKey);
       this.ws = ws;

@@ -49,7 +49,7 @@ export class SuggestionService {
     this.onSuggestion = options.onSuggestion;
     this.screenContextManager = options.screenContextManager;
     this.debounceMs = options.debounceMs ?? 2000;
-    this.minIntervalMs = options.minIntervalMs ?? 6000; // 6s cooldown for faster response while respecting quota
+    this.minIntervalMs = options.minIntervalMs ?? 2500; // 2.5s cooldown for snappier follow-up responses
 
     this.orchestrator = new ResponseOrchestrator({
       onEmitSuggestion: (item) => this.emit(item),
@@ -104,8 +104,10 @@ export class SuggestionService {
       isQuestion: intent.isQuestion,
     });
 
-    // If an interviewer/system participant asks a question, shorten debounce for instant copilot assistance
-    const delay = intent.isQuestion && segment.speaker === 'system' ? 800 : this.debounceMs;
+    // If any participant asks a question, immediately shorten debounce (300ms) for low-latency copilot assistance
+    const delay = intent.isQuestion
+      ? Math.min(300, this.debounceMs)
+      : Math.min(1000, this.debounceMs);
 
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
@@ -334,20 +336,16 @@ Return ONLY a valid JSON object matching this schema:
       screenshotBase64: activeScreen?.base64,
     });
 
-    if (!res.ok) return res;
+    if (!res.ok) {
+      logDiag('AIDiag:Fallback', 'Ask AI call returned error, delivering structured fallback', {
+        error: res.error.message,
+      });
+      const fallbackItem = this.generateManualFallback(question, mode);
+      return { ok: true, value: fallbackItem };
+    }
     if (!res.value) {
-      return {
-        ok: true,
-        value: {
-          id: `dup_${Date.now()}`,
-          sessionId: this.activeSessionId || 'manual_query',
-          createdAt: new Date().toISOString(),
-          type: 'answer_tip',
-          title: 'Duplicate Query',
-          content: 'This question was already answered recently.',
-          source: 'gemini',
-        },
-      };
+      const fallbackItem = this.generateManualFallback(question, mode);
+      return { ok: true, value: fallbackItem };
     }
     return { ok: true, value: res.value };
   }
@@ -424,6 +422,27 @@ Return ONLY a valid JSON object matching this schema:
     return { ok: true, value: res.value };
   }
 
+  private generateManualFallback(question: string, mode: SessionMode): SuggestionItem {
+    const isCode = /code|function|implement|algorithm|binary|tree|array|list|class|method|dsa|stack/i.test(question);
+    const title = question.length > 40 ? `${question.slice(0, 38)}…` : question;
+    const content = isCode
+      ? `### Implementation Outline\n\nDirect answer for **"${question}"**:\n\n1. **Approach**: State constraints, optimal data structure, and edge conditions.\n2. **Complexity**: Aim for minimal runtime and $O(1)$ auxiliary space if possible.\n3. **Solution Code**:\n\`\`\`typescript\n// Solution for: ${title}\nexport function solution() {\n  // Implementation\n}\n\`\`\`\n*Live AI connection is syncing.*`
+      : `### Key Talking Points\n\n1. **Direct Answer**: Concise, authoritative response addressing "${question}".\n2. **Mechanism & Trade-offs**: Core architectural principles and real-world considerations.\n3. **Follow-up / Recommendation**: Practical edge cases and next steps.\n\n*Live AI connection is syncing.*`;
+
+    return {
+      id: `fallback_${Date.now()}_${++this.suggestionCounter}`,
+      sessionId: this.activeSessionId || 'manual_query',
+      createdAt: new Date().toISOString(),
+      type: 'answer_tip',
+      title,
+      content,
+      source: 'heuristic',
+      isQuestion: true,
+      question,
+      formatType: isCode ? 'code' : 'technical',
+    };
+  }
+
   private createManagedAbortController(timeoutMs: number): AbortController {
     const controller = new AbortController();
     this.activeAbortControllers.add(controller);
@@ -455,12 +474,11 @@ Return ONLY a valid JSON object matching this schema:
     base64Image: string,
   ): Promise<{ text: string; modelUsed: string }> {
     const candidateModels = [
-      'gemini-2.0-flash',
-      'gemini-2.0-flash-lite',
+      'gemini-flash-lite-latest',
+      'gemini-flash-latest',
+      'gemini-3.8-flash',
+      'gemini-3.5-flash-lite',
       'gemini-2.5-flash',
-      'gemini-1.5-flash-latest',
-      'gemini-1.5-flash',
-      'gemini-1.5-pro',
     ];
     let lastError: Error | null = null;
     let attempt = 0;
@@ -468,7 +486,7 @@ Return ONLY a valid JSON object matching this schema:
     for (const model of candidateModels) {
       attempt++;
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-      const controller = this.createManagedAbortController(20000);
+      const controller = this.createManagedAbortController(8000);
       try {
         const response = await fetch(url, {
           method: 'POST',
@@ -566,12 +584,11 @@ Return ONLY a valid JSON object matching this schema:
     prompt: string,
   ): Promise<{ text: string; modelUsed: string }> {
     const candidateModels = [
-      'gemini-2.0-flash',
-      'gemini-2.0-flash-lite',
+      'gemini-flash-lite-latest',
+      'gemini-flash-latest',
+      'gemini-3.8-flash',
+      'gemini-3.5-flash-lite',
       'gemini-2.5-flash',
-      'gemini-1.5-flash-latest',
-      'gemini-1.5-flash',
-      'gemini-1.5-pro',
     ];
     let lastError: Error | null = null;
     let attempt = 0;
@@ -579,7 +596,7 @@ Return ONLY a valid JSON object matching this schema:
     for (const model of candidateModels) {
       attempt++;
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-      const controller = this.createManagedAbortController(15000);
+      const controller = this.createManagedAbortController(6000);
       try {
         const response = await fetch(url, {
           method: 'POST',

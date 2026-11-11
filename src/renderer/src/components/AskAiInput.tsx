@@ -20,10 +20,16 @@ export function AskAiInput({
 
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (isGenerating) return;
     const clean = query.trim();
-    if (!clean || isGenerating) return;
-    onAsk(clean);
-    setQuery('');
+    if (clean) {
+      onAsk(clean);
+      setQuery('');
+    } else if (hasVisualContext) {
+      onAsk('Analyze this captured screen, solve any problem or error shown, and explain the optimal solution.');
+    } else {
+      onAsk('Provide a structured answer to the latest question or key topic discussed.');
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -73,8 +79,9 @@ export function AskAiInput({
         <button
           type="submit"
           className="ask-ai-submit-btn"
-          disabled={!query.trim() || isGenerating}
+          disabled={isGenerating}
           aria-label="Ask AI"
+          title={query.trim() ? "Submit question to Gemini" : hasVisualContext ? "Analyze active screen with Gemini Vision" : "Answer latest topic with Gemini"}
         >
           {isGenerating ? (
             <span className="spinner-icon" />

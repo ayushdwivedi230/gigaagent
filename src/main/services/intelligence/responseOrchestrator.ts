@@ -61,8 +61,8 @@ export class ResponseOrchestrator {
     // Step 1: Detect question/acknowledgement/greeting
     const detection = this.detector.detect(text);
 
-    // If it's an acknowledgement (e.g. "Okay, got it"), record in context but do NOT respond
-    if (detection.isAcknowledgement) {
+    // If it's an acknowledgement (e.g. "Okay, got it"), record in context but do NOT respond unless user manually asked
+    if (detection.isAcknowledgement && !request.isManual) {
       logDiag('Orchestrator:Acknowledgement', 'Acknowledgement detected, skipping AI generation', { text });
       this.contextManager.addTurn(speaker, text);
       return { ok: true, value: null };
@@ -75,8 +75,8 @@ export class ResponseOrchestrator {
       return { ok: true, value: null };
     }
 
-    // Step 2: Check duplicate guard
-    if (this.duplicateGuard.isDuplicate(text)) {
+    // Step 2: Check duplicate guard (bypass for manual user actions so clicking Ask AI or re-asking always runs)
+    if (!request.isManual && this.duplicateGuard.isDuplicate(text)) {
       logDiag('Orchestrator:Duplicate', 'Duplicate query dropped by guard', { text });
       return { ok: true, value: null };
     }
