@@ -56,6 +56,7 @@ export default function App() {
         onMinimize={() => winApi?.window.minimize()}
         onClose={() => winApi?.window.close()}
         isInvisible={assistant.settings?.screenShareInvisibility ?? true}
+        onToggleInvisibility={assistant.toggleInvisibility}
       />
 
       {/* ── Actionable Notification / Error Alert ── */}

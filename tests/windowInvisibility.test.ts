@@ -124,3 +124,4 @@ test('5. Destruction: Cleans up listeners safely when window closes', () => {
 
   service.destroy();
 });
+

@@ -126,3 +126,4 @@ pub fn setup_overlay_window<R: Runtime>(window: &Window<R>) -> Result<(), String
 
     Ok(())
 }
+

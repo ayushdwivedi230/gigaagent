@@ -49,6 +49,7 @@ export interface AssistantState {
   dismissError: () => void;
   loadSettings: () => Promise<void>;
   saveSettings: (updates: UpdateSettingsRequest) => Promise<void>;
+  toggleInvisibility: () => Promise<void>;
   testGemini: (question?: string) => Promise<SuggestionItem | undefined>;
   askAi: (
     question: string,
@@ -119,6 +120,16 @@ export function useAssistant(): AssistantState {
     },
     [call],
   );
+
+  const toggleInvisibility = useCallback(async () => {
+    if (!api) return;
+    const current = settings?.screenShareInvisibility ?? true;
+    const next = !current;
+    const res = await call(api.invisibility.setEnabled(next));
+    if (res) {
+      setSettings((prev) => (prev ? { ...prev, screenShareInvisibility: next } : prev));
+    }
+  }, [call, settings]);
 
   useEffect(() => {
     if (!api) {
@@ -454,6 +465,7 @@ export function useAssistant(): AssistantState {
     dismissError: () => setError(null),
     loadSettings,
     saveSettings,
+    toggleInvisibility,
     testGemini,
     askAi,
     screenSources,

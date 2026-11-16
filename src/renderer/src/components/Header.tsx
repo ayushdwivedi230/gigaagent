@@ -8,6 +8,7 @@ interface HeaderProps {
   onMinimize: () => void;
   onClose: () => void;
   isInvisible?: boolean;
+  onToggleInvisibility?: () => void;
 }
 
 const MODES: Array<{ id: SessionMode; label: string; icon: string }> = [
@@ -24,6 +25,7 @@ export function Header({
   onMinimize,
   onClose,
   isInvisible = true,
+  onToggleInvisibility,
 }: HeaderProps) {
   return (
     <header className="copilot-header">
@@ -31,15 +33,23 @@ export function Header({
       <div className="copilot-brand">
         <span className="brand-dot" aria-hidden="true" />
         <span className="brand-name">GigaAgent</span>
-        {isInvisible && (
-          <span
-            className="invisibility-badge"
-            title="Screen-Share Invisible: Window is excluded from Zoom, Teams, Meet, OBS & screenshots (WDA_EXCLUDEFROMCAPTURE / NSWindowSharingNone)"
-            aria-label="Screen-share invisible active"
-          >
-            🛡️ Ghost
-          </span>
-        )}
+        <button
+          type="button"
+          className={`ghost-toggle-btn ${isInvisible ? 'ghost-toggle-btn--active' : 'ghost-toggle-btn--inactive'}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleInvisibility?.();
+          }}
+          title={
+            isInvisible
+              ? "Ghost Mode Active: Window is hidden from Zoom, Teams, Meet, OBS & screenshots. Click to turn OFF."
+              : "Ghost Mode Inactive: Window is visible to screen sharing. Click to turn ON."
+          }
+          aria-label={isInvisible ? "Disable Ghost Mode" : "Enable Ghost Mode"}
+        >
+          <span className="ghost-icon" aria-hidden="true">{isInvisible ? '🛡️' : '👁️'}</span>
+          <span className="ghost-label">{isInvisible ? 'Ghost On' : 'Ghost Off'}</span>
+        </button>
       </div>
 
       {/* ── Mode Selector ── */}
