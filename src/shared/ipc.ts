@@ -1,6 +1,7 @@
 import type {
   ClientSettings,
   DesktopSourceInfo,
+  InvisibilityStatus,
   Result,
   ScreenAnalysisRequest,
   ScreenshotData,
@@ -42,6 +43,8 @@ export const IPC = {
   event: 'session:event',
   windowMinimize: 'window:minimize',
   windowClose: 'window:close',
+  invisibilityGet: 'invisibility:get',
+  invisibilitySet: 'invisibility:set',
 } as const;
 
 /** The only surface the renderer can use to reach the main process (exposed as window.api). */
@@ -101,6 +104,11 @@ export interface MeetingAssistantApi {
   window: {
     minimize(): void;
     close(): void;
+  };
+  /** Screen-share invisibility & window capture exclusion controls. */
+  invisibility: {
+    getStatus(): Promise<Result<InvisibilityStatus>>;
+    setEnabled(enabled: boolean): Promise<Result<InvisibilityStatus>>;
   };
   /** Subscribe to main-process events. Returns an unsubscribe function. */
   onEvent(listener: (event: SessionEvent) => void): () => void;

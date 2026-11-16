@@ -11,6 +11,7 @@ import type { SuggestionService } from './services/suggestionService';
 import type { ScreenCaptureService } from './services/screenCaptureService';
 import type { ScreenContextManager } from './services/screenContextManager';
 import type { DiagnosticsService } from './services/diagnosticsService';
+import type { WindowInvisibilityService } from './services/windowInvisibilityService';
 import { logDiag } from './services/diagnosticsLogger';
 
 /**
@@ -27,6 +28,7 @@ export function registerIpc(
   screenCaptureService?: ScreenCaptureService,
   screenContextManager?: ScreenContextManager,
   diagnosticsService?: DiagnosticsService,
+  windowInvisibilityService?: WindowInvisibilityService,
 ): () => void {
   const trusted = (event: IpcMainInvokeEvent | IpcMainEvent): boolean =>
     !win.isDestroyed() && event.sender === win.webContents;
@@ -65,7 +67,34 @@ export function registerIpc(
     if (typeof raw !== 'object' || raw === null) {
       return err('INVALID_REQUEST', 'Settings data was malformed.');
     }
-    return ok(settingsService.saveSettings(raw as UpdateSettingsRequest));
+    const updates = raw as UpdateSettingsRequest;
+    if (updates.screenShareInvisibility !== undefined && windowInvisibilityService) {
+      windowInvisibilityService.setEnabled(updates.screenShareInvisibility);
+    }
+    return ok(settingsService.saveSettings(updates));
+  });
+
+  handle(IPC.invisibilityGet, () => {
+    return ok(
+      windowInvisibilityService
+        ? windowInvisibilityService.getStatus()
+        : {
+            enabled: true,
+            platform: process.platform,
+            affinityFlag: process.platform === 'win32' ? 'WDA_EXCLUDEFROMCAPTURE (0x00000011)' : 'NSWindowSharingNone (0)',
+            lastAppliedAt: new Date().toISOString(),
+          },
+    );
+  });
+
+  handle(IPC.invisibilitySet, (raw) => {
+    const enable = Boolean(raw);
+    if (windowInvisibilityService) {
+      const status = windowInvisibilityService.setEnabled(enable);
+      settingsService.saveSettings({ screenShareInvisibility: enable });
+      return ok(status);
+    }
+    return err('INTERNAL', 'Window invisibility service is unavailable.');
   });
 
   handle(IPC.systemAudioArm, () => {

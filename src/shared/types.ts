@@ -73,10 +73,20 @@ export interface ScreenAnalysisRequest {
   screenshotId?: string;
 }
 
+export interface InvisibilityStatus {
+  enabled: boolean;
+  platform: string;
+  affinityFlag: string;
+  hwndHex?: string;
+  lastAppliedAt: string;
+  error?: string;
+}
+
 export interface AppSettings {
   sttApiKey?: string;
   geminiApiKey?: string;
   sttProvider: 'deepgram' | 'google' | 'mock';
+  screenShareInvisibility?: boolean;
 }
 
 /** Sanitized settings safe for renderer consumption (secrets masked). */
@@ -86,12 +96,14 @@ export interface ClientSettings {
   hasGeminiKey: boolean;
   maskedSttKey?: string;
   maskedGeminiKey?: string;
+  screenShareInvisibility: boolean;
 }
 
 export interface UpdateSettingsRequest {
   sttProvider?: 'deepgram' | 'google' | 'mock';
   sttApiKey?: string;
   geminiApiKey?: string;
+  screenShareInvisibility?: boolean;
 }
 
 export interface SessionSummary {

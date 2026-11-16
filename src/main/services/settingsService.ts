@@ -41,6 +41,7 @@ export class SettingsService {
       hasGeminiKey: Boolean(effectiveGemini && effectiveGemini.trim().length > 0),
       maskedSttKey: mask(effectiveStt),
       maskedGeminiKey: mask(effectiveGemini),
+      screenShareInvisibility: this.cached.screenShareInvisibility ?? true,
     };
   }
 
@@ -53,6 +54,9 @@ export class SettingsService {
     }
     if (updates.geminiApiKey !== undefined) {
       this.cached.geminiApiKey = updates.geminiApiKey.trim();
+    }
+    if (updates.screenShareInvisibility !== undefined) {
+      this.cached.screenShareInvisibility = updates.screenShareInvisibility;
     }
 
     if (this.filePath) {
@@ -75,6 +79,7 @@ export class SettingsService {
       sttProvider: 'deepgram',
       sttApiKey: process.env.DEEPGRAM_API_KEY || '',
       geminiApiKey: process.env.GEMINI_API_KEY || '',
+      screenShareInvisibility: true,
     };
 
     if (!this.filePath || !fs.existsSync(this.filePath)) {
@@ -106,10 +111,14 @@ export class SettingsService {
           ? parsed.sttProvider
           : 'deepgram';
 
+      const screenShareInvisibility =
+        parsed.screenShareInvisibility !== undefined ? Boolean(parsed.screenShareInvisibility) : true;
+
       return {
         sttProvider,
         sttApiKey,
         geminiApiKey,
+        screenShareInvisibility,
       };
     } catch {
       return defaults;
@@ -127,6 +136,7 @@ export class SettingsService {
 
       const dataToSave: Record<string, unknown> = {
         sttProvider: this.cached.sttProvider,
+        screenShareInvisibility: this.cached.screenShareInvisibility ?? true,
       };
 
       if (this.adapter?.isEncryptionAvailable()) {

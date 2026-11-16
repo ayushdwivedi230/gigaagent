@@ -12,12 +12,14 @@ export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
   const [provider, setProvider] = useState<'deepgram' | 'google' | 'mock'>('deepgram');
   const [sttKey, setSttKey] = useState('');
   const [geminiKey, setGeminiKey] = useState('');
+  const [screenShareInvisibility, setScreenShareInvisibility] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   useEffect(() => {
     if (settings) {
       setProvider(settings.sttProvider || 'deepgram');
+      setScreenShareInvisibility(settings.screenShareInvisibility ?? true);
       setSttKey('');
       setGeminiKey('');
     }
@@ -33,6 +35,7 @@ export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
     try {
       const updates: UpdateSettingsRequest = {
         sttProvider: provider,
+        screenShareInvisibility,
       };
 
       if (sttKey.trim()) {
@@ -128,6 +131,20 @@ export function SettingsModal({ isOpen, onClose, settings, onSave }: Props) {
               }
               autoComplete="off"
             />
+          </div>
+
+          <div className="field-group">
+            <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={screenShareInvisibility}
+                onChange={(e) => setScreenShareInvisibility(e.target.checked)}
+              />
+              <span style={{ fontWeight: 600 }}>Screen-Share Invisibility (Ghost Mode)</span>
+            </label>
+            <p className="field-hint" style={{ marginTop: '4px', fontSize: '11px', color: 'var(--text-muted)' }}>
+              Completely excludes this overlay window from screen shares (Zoom, Meet, Teams, OBS) and screenshots using Win32 <code>WDA_EXCLUDEFROMCAPTURE</code> on Windows and <code>NSWindowSharingNone</code> on macOS.
+            </p>
           </div>
 
           {saveSuccess && (

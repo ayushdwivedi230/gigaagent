@@ -7,6 +7,7 @@ interface HeaderProps {
   onOpenSettings: () => void;
   onMinimize: () => void;
   onClose: () => void;
+  isInvisible?: boolean;
 }
 
 const MODES: Array<{ id: SessionMode; label: string; icon: string }> = [
@@ -22,6 +23,7 @@ export function Header({
   onOpenSettings,
   onMinimize,
   onClose,
+  isInvisible = true,
 }: HeaderProps) {
   return (
     <header className="copilot-header">
@@ -29,6 +31,15 @@ export function Header({
       <div className="copilot-brand">
         <span className="brand-dot" aria-hidden="true" />
         <span className="brand-name">GigaAgent</span>
+        {isInvisible && (
+          <span
+            className="invisibility-badge"
+            title="Screen-Share Invisible: Window is excluded from Zoom, Teams, Meet, OBS & screenshots (WDA_EXCLUDEFROMCAPTURE / NSWindowSharingNone)"
+            aria-label="Screen-share invisible active"
+          >
+            🛡️ Ghost
+          </span>
+        )}
       </div>
 
       {/* ── Mode Selector ── */}

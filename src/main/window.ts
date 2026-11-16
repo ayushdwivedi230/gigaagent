@@ -41,8 +41,16 @@ export function createMainWindow(): BrowserWindow {
     },
   });
 
+  // Apply initial content protection immediately upon window construction
+  win.setContentProtection(true);
+
   // Keep on top of other desktop windows
-  win.setAlwaysOnTop(true);
+  if (process.platform === 'darwin') {
+    win.setAlwaysOnTop(true, 'screen-saver');
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  } else {
+    win.setAlwaysOnTop(true);
+  }
 
   win.once('ready-to-show', () => {
     win.show();

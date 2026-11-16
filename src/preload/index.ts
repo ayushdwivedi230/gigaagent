@@ -58,6 +58,10 @@ const api: MeetingAssistantApi = {
     minimize: () => { void ipcRenderer.invoke(IPC.windowMinimize); },
     close: () => { void ipcRenderer.invoke(IPC.windowClose); },
   },
+  invisibility: {
+    getStatus: () => ipcRenderer.invoke(IPC.invisibilityGet),
+    setEnabled: (enabled) => ipcRenderer.invoke(IPC.invisibilitySet, enabled),
+  },
   onEvent: (listener) => {
     const handler = (_event: IpcRendererEvent, payload: SessionEvent): void => listener(payload);
     ipcRenderer.on(IPC.event, handler);

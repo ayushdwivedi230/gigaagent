@@ -17,6 +17,7 @@ import { SuggestionService } from './services/suggestionService';
 import { ScreenCaptureService } from './services/screenCaptureService';
 import { ScreenContextManager } from './services/screenContextManager';
 import { DiagnosticsService } from './services/diagnosticsService';
+import { WindowInvisibilityService } from './services/windowInvisibilityService';
 import { initDiagnosticsLogger, logDiag } from './services/diagnosticsLogger';
 import type { SessionSnapshot } from '@shared/types';
 
@@ -26,6 +27,7 @@ let repository: SessionRepository;
 let service: SessionService;
 let suggestionService: SuggestionService;
 let diagnosticsService: DiagnosticsService;
+let windowInvisibilityService: WindowInvisibilityService;
 const systemAudioGate = new SystemAudioGate();
 const screenContextManager = new ScreenContextManager();
 const screenCaptureService = new ScreenCaptureService();
@@ -57,6 +59,9 @@ async function initServices(): Promise<void> {
   if (settingsService.getEffectiveGeminiKey()) {
     diagnosticsService.setAiStatus('configured');
   }
+
+  const initialInvisibility = settingsService.getSettings().screenShareInvisibility ?? true;
+  windowInvisibilityService = new WindowInvisibilityService({ enabled: initialInvisibility });
 
   const dbPath = path.join(userDataDir, 'sessions.db');
   try {
@@ -215,6 +220,7 @@ if (!app.requestSingleInstanceLock()) {
     await initServices();
     const win = createMainWindow();
     mainWindow = win;
+    windowInvisibilityService.attach(win);
     configurePermissions(win);
     registerIpc(
       win,
@@ -225,6 +231,7 @@ if (!app.requestSingleInstanceLock()) {
       screenCaptureService,
       screenContextManager,
       diagnosticsService,
+      windowInvisibilityService,
     );
 
     win.webContents.on('render-process-gone', (_e, details) => {
@@ -263,6 +270,7 @@ if (!app.requestSingleInstanceLock()) {
     logDiag('Lifecycle', 'Graceful shutdown initiated: releasing all resources...');
     systemAudioGate.disarm();
     suggestionService?.destroy();
+    windowInvisibilityService?.destroy();
     screenContextManager.clear();
 
     void Promise.resolve(service?.stop())
