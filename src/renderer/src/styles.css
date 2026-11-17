@@ -500,3 +500,13 @@ button.card:hover { border-color: var(--border-strong); background: var(--surfac
   .tab[aria-selected='true'], .segmented__item[aria-checked='true'], .settings__tab[aria-current='page'] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
   .rec__dot, .meter__fill { forced-color-adjust: none; }
 }
+
+/* ── Stealth Cursor: Suppresses the OS hardware cursor from screen shares ── */
+.stealth-cursor-active,
+.stealth-cursor-active *,
+.stealth-cursor-active button,
+.stealth-cursor-active input,
+.stealth-cursor-active textarea,
+.stealth-cursor-active a {
+  cursor: none !important;
+}

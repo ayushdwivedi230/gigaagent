@@ -3,7 +3,7 @@ import type { Preferences, WindowBounds } from './types';
 
 /** Pure defaults + validation for user preferences. No Node/Electron/DOM imports. */
 export const DEFAULT_PREFERENCES: Preferences = {
-  appearance: { theme: 'dark', accent: 'violet', textScale: 1, reducedMotion: 'system' },
+  appearance: { theme: 'dark', accent: 'violet', textScale: 1, reducedMotion: 'system', stealthCursor: true },
   ai: {
     answerFormat: 'natural',
     speakingTargetSec: 0,
@@ -28,7 +28,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
     alwaysOnTop: true,
     compactBounds: null,
     expandedBounds: null,
-    clickThrough: true,
+    clickThrough: false,
   },
   audio: { micDeviceId: null, defaultSource: 'both', defaultMode: 'mock-interview' },
 };
@@ -101,6 +101,7 @@ export function sanitizePreferences(input: unknown, base: Preferences = DEFAULT_
       accent: oneOf(a.accent, ACCENTS, base.appearance.accent),
       textScale: Math.round(num(a.textScale, TEXT_SCALE_MIN, TEXT_SCALE_MAX, base.appearance.textScale) * 100) / 100,
       reducedMotion: oneOf(a.reducedMotion, ['system', 'on', 'off'] as const, base.appearance.reducedMotion),
+      stealthCursor: bool(a.stealthCursor, base.appearance.stealthCursor ?? true),
     },
     ai: {
       answerFormat: oneOf(ai.answerFormat, ANSWER_FORMATS, base.ai.answerFormat),
@@ -131,7 +132,7 @@ export function sanitizePreferences(input: unknown, base: Preferences = DEFAULT_
       alwaysOnTop: bool(l.alwaysOnTop, base.layout.alwaysOnTop),
       compactBounds: 'compactBounds' in l ? bounds(l.compactBounds, base.layout.compactBounds) : base.layout.compactBounds,
       expandedBounds: 'expandedBounds' in l ? bounds(l.expandedBounds, base.layout.expandedBounds) : base.layout.expandedBounds,
-      clickThrough: bool(l.clickThrough, base.layout.clickThrough ?? true),
+      clickThrough: bool(l.clickThrough, base.layout.clickThrough ?? false),
     },
     audio: {
       micDeviceId: mic === null ? null : typeof mic === 'string' && mic.length <= 256 ? mic : base.audio.micDeviceId,

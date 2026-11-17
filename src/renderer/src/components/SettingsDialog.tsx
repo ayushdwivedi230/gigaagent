@@ -338,11 +338,18 @@ export function SettingsDialog(p: SettingsDialogProps) {
             <span className={`chip chip--${ghostState === 'active' ? 'ok' : ghostState === 'error' ? 'warn' : 'quiet'}`}>{ghostState === 'active' ? 'On' : ghostState === 'off' ? 'Off' : ghostState === 'applying' ? 'Applying…' : ghostState === 'unsupported' ? 'Unavailable' : 'Error'}</span>
             <Toggle checked={ghostState === 'active'} disabled={!ghost || ghost.supported === false || ghostState === 'applying'} onChange={p.onGhost} label="Ghost Mode" />
           </Row>
-          <Row label="Mouse Cursor Passthrough" hint="Passes through mouse interaction and hardware cursor rendering on non-interactive areas to underlying applications.">
+          <Row label="Stealth Cursor (Hide on Screen Share)" hint="Suppresses the OS mouse cursor over GigaAgent so participants on Google Meet, Zoom, and Teams cannot see cursor movement. Renders a private in-app cursor visible only to you.">
             <Toggle
-              checked={prefs.layout.clickThrough ?? true}
+              checked={prefs.appearance.stealthCursor ?? true}
+              onChange={(v) => p.onPrefs({ appearance: { stealthCursor: v } })}
+              label="Stealth Cursor"
+            />
+          </Row>
+          <Row label="Click-Through Mode" hint="Passes through clicks on non-interactive areas directly to background applications.">
+            <Toggle
+              checked={prefs.layout.clickThrough ?? false}
               onChange={(v) => p.onPrefs({ layout: { clickThrough: v } })}
-              label="Mouse Cursor Passthrough"
+              label="Click-Through Mode"
             />
           </Row>
           {ghost?.error && (

@@ -105,7 +105,7 @@ export function applyWindowMode(win: BrowserWindow, mode: WindowMode, layout: La
   win.setMinimumSize(limits.minWidth, limits.minHeight);
   setAlwaysOnTop(win, mode === 'compact' && layout.alwaysOnTop);
   try {
-    if (mode === 'compact' && layout.clickThrough !== false) {
+    if (mode === 'compact' && layout.clickThrough === true) {
       win.setIgnoreMouseEvents(true, { forward: true });
     } else {
       win.setIgnoreMouseEvents(false);
@@ -162,8 +162,10 @@ export function createMainWindow(options: CreateWindowOptions): BrowserWindow {
   win.setContentProtection(options.contentProtection);
   setAlwaysOnTop(win, mode === 'compact' && options.layout.alwaysOnTop);
   try {
-    if (mode === 'compact' && options.layout.clickThrough !== false) {
+    if (mode === 'compact' && options.layout.clickThrough === true) {
       win.setIgnoreMouseEvents(true, { forward: true });
+    } else {
+      win.setIgnoreMouseEvents(false);
     }
   } catch {}
 

@@ -164,6 +164,8 @@ export interface AppearanceSettings {
   /** Multiplier applied to the root font size. 0.9 – 2.0 (WCAG 1.4.4 needs 200%). */
   textScale: number;
   reducedMotion: 'system' | 'on' | 'off';
+  /** Suppresses OS hardware cursor over the overlay and renders an in-app private cursor to hide movement on screen shares. */
+  stealthCursor?: boolean;
 }
 
 export interface AiSettings {

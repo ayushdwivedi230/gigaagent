@@ -14,6 +14,7 @@ import { SessionBar } from './components/SessionBar';
 import { SettingsDialog } from './components/SettingsDialog';
 import type { SettingsSection } from './components/SettingsDialog';
 import { Splitter } from './components/Splitter';
+import { StealthCursor } from './components/StealthCursor';
 import { TitleBar } from './components/TitleBar';
 import { TranscriptPanel } from './components/TranscriptPanel';
 import { useMousePassthrough } from './state/useMousePassthrough';
@@ -439,6 +440,8 @@ export default function App() {
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {a.announcement}
       </div>
+
+      <StealthCursor enabled={prefs.appearance.stealthCursor ?? true} />
 
       <SettingsDialog
         open={settingsOpen}
