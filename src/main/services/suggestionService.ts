@@ -1,5 +1,8 @@
+import { parseAskOptions } from '@shared/validation';
 import type {
+  AskOptions,
   Result,
+  RunToolRequest,
   ScreenAnalysisRequest,
   ScreenshotData,
   SessionMode,
@@ -9,7 +12,21 @@ import type {
 import type { SettingsService } from './settingsService';
 import type { ScreenContextManager } from './screenContextManager';
 import { ResponseOrchestrator } from './intelligence/responseOrchestrator';
+import { parseAnswer, streamingBody } from './intelligence/answerParser';
+import { describeGeminiError, GeminiClient, GeminiError } from './geminiClient';
+import type { GeminiClientOptions } from './geminiClient';
+import { buildToolPrompt, getModeTool } from '@shared/modeTools';
 import { logDiag } from './diagnosticsLogger';
+
+export interface AiUsageSnapshot {
+  requests: number;
+  failures: number;
+  cancelled: number;
+  lastLatencyMs: number | null;
+  lastModel: string | null;
+  promptTokens: number;
+  outputTokens: number;
+}
 
 export interface SuggestionServiceOptions {
   settingsService: SettingsService;
@@ -17,6 +34,15 @@ export interface SuggestionServiceOptions {
   screenContextManager?: ScreenContextManager;
   debounceMs?: number;
   minIntervalMs?: number;
+  /** Streaming progress for manual questions and tools. `text` is the answer body so far. */
+  onDelta?: (requestId: string, text: string, question?: string) => void;
+  /** Resolves the active preparation profile text (library item) for prompt context. */
+  getProfileText?: (id: string) => string | undefined;
+  /** Supplies recent transcript text for mode tools when no input is passed. */
+  getTranscriptText?: (sessionId?: string) => string;
+  /** Test seam / future provider switch. */
+  gemini?: Partial<GeminiClientOptions>;
+  onUsage?: (usage: AiUsageSnapshot) => void;
 }
 
 export interface DetectedIntent {
@@ -26,14 +52,32 @@ export interface DetectedIntent {
   topic: string;
 }
 
+const NO_KEY = 'No Gemini API key is configured. Please enter your Gemini API Key in Settings.';
+const CLOUD_AI_OFF = 'Cloud AI is turned off in Settings → Privacy. Turn it on to generate answers.';
+const DELTA_INTERVAL_MS = 60;
+
 export class SuggestionService {
   private readonly settingsService: SettingsService;
   private readonly onSuggestion: (suggestion: SuggestionItem) => void;
-  private readonly screenContextManager?: ScreenContextManager;
+  private readonly screenContextManager: ScreenContextManager | undefined;
   private readonly orchestrator: ResponseOrchestrator;
+  private readonly client: GeminiClient;
   private readonly debounceMs: number;
   private readonly minIntervalMs: number;
-  private readonly activeAbortControllers: Set<AbortController> = new Set();
+  private readonly onDelta: ((requestId: string, text: string, question?: string) => void) | undefined;
+  private readonly getProfileText: ((id: string) => string | undefined) | undefined;
+  private readonly getTranscriptText: ((sessionId?: string) => string) | undefined;
+  private readonly onUsage: ((usage: AiUsageSnapshot) => void) | undefined;
+  private readonly toolControllers = new Map<string, AbortController>();
+  private readonly usage: AiUsageSnapshot = {
+    requests: 0,
+    failures: 0,
+    cancelled: 0,
+    lastLatencyMs: null,
+    lastModel: null,
+    promptTokens: 0,
+    outputTokens: 0,
+  };
 
   private activeSessionId: string | null = null;
   private currentMode: SessionMode = 'mock-interview';
@@ -43,6 +87,7 @@ export class SuggestionService {
   private isProcessing = false;
   private lastQueryTimestamp = 0;
   private lastQueriedText = '';
+  private paused = false;
 
   constructor(options: SuggestionServiceOptions) {
     this.settingsService = options.settingsService;
@@ -50,24 +95,66 @@ export class SuggestionService {
     this.screenContextManager = options.screenContextManager;
     this.debounceMs = options.debounceMs ?? 2000;
     this.minIntervalMs = options.minIntervalMs ?? 2500; // 2.5s cooldown for snappier follow-up responses
+    this.onDelta = options.onDelta;
+    this.getProfileText = options.getProfileText;
+    this.getTranscriptText = options.getTranscriptText;
+    this.onUsage = options.onUsage;
+
+    this.client = new GeminiClient({
+      getApiKey: () => this.settingsService.getEffectiveGeminiKey(),
+      ...options.gemini,
+    });
 
     this.orchestrator = new ResponseOrchestrator({
       onEmitSuggestion: (item) => this.emit(item),
-      geminiRequester: async (prompt, screenBase64) => {
-        const apiKey = this.settingsService.getEffectiveGeminiKey();
-        if (!apiKey) {
-          throw new Error('No Gemini API key is configured.');
-        }
-        if (screenBase64) {
-          return this.dispatchGeminiVisionRequest(apiKey, prompt, screenBase64);
-        }
-        return this.dispatchGeminiRequest(apiKey, prompt);
-      },
+      describeError: (error) => ({
+        message: describeGeminiError(error),
+        cancelled: error instanceof GeminiError && error.kind === 'cancelled',
+      }),
+      geminiRequester: (prompt, screenBase64, opts) =>
+        this.track(() =>
+          this.client.generate({
+            prompt,
+            imageBase64: screenBase64,
+            signal: opts?.signal,
+            onDelta: opts?.onDelta,
+            json: opts?.json ?? true,
+            maxOutputTokens: opts?.maxOutputTokens ?? (screenBase64 ? 2048 : 1024),
+            temperature: screenBase64 ? 0.2 : 0.3,
+            preferredModel: opts?.preferredModel || this.prefs().ai.model || undefined,
+          }),
+        ),
     });
   }
 
   getOrchestrator(): ResponseOrchestrator {
     return this.orchestrator;
+  }
+
+  getUsage(): AiUsageSnapshot {
+    return { ...this.usage };
+  }
+
+  /** While paused, transcript segments are ignored and no automatic answers are generated. */
+  setPaused(paused: boolean): void {
+    this.paused = paused;
+    if (paused && this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+  }
+
+  /** Cancels in-flight answers (one id, or all). Returns the number cancelled. */
+  cancel(requestId?: string): number {
+    let count = this.orchestrator.cancel(requestId);
+    const tools = requestId ? [requestId].filter((id) => this.toolControllers.has(id)) : [...this.toolControllers.keys()];
+    for (const id of tools) {
+      this.toolControllers.get(id)?.abort();
+      this.toolControllers.delete(id);
+      count++;
+    }
+    if (!requestId) count = Math.max(count, this.client.abortAll());
+    return count;
   }
 
   setSession(sessionId: string | null, mode: SessionMode = 'mock-interview'): void {
@@ -78,41 +165,39 @@ export class SuggestionService {
       this.suggestionCounter = 0;
       this.lastQueryTimestamp = 0;
       this.lastQueriedText = '';
+      this.paused = false;
       this.orchestrator.setSession(sessionId, mode);
       if (this.debounceTimer) {
         clearTimeout(this.debounceTimer);
         this.debounceTimer = null;
       }
-      logDiag('AIDiag:01-Session', 'Active session updated in SuggestionService', {
-        sessionId,
-        mode,
-      });
+      logDiag('AIDiag:01-Session', 'Active session updated in SuggestionService', { sessionId, mode });
     }
   }
 
   handleSegment(segment: TranscriptSegment): void {
     if (!this.activeSessionId || segment.sessionId !== this.activeSessionId) return;
-    if (!segment.isFinal) return;
+    if (!segment.isFinal || this.paused) return;
 
     this.accumulatedSegments.push(segment);
+    // Bounded memory: only the recent window is ever used for prompts.
+    if (this.accumulatedSegments.length > 200) this.accumulatedSegments = this.accumulatedSegments.slice(-100);
+
+    if (!this.prefs().ai.autoAnswer) return;
 
     const intent = this.detectQuestionAndIntent([segment]);
+    // Transcript text is user content: log shape only, never the words.
     logDiag('AIDiag:01-Segment', 'Final segment received', {
       segmentId: segment.id,
       speaker: segment.speaker,
-      text: segment.text,
+      chars: segment.text.length,
       isQuestion: intent.isQuestion,
     });
 
-    // If any participant asks a question, immediately shorten debounce (300ms) for low-latency copilot assistance
-    const delay = intent.isQuestion
-      ? Math.min(300, this.debounceMs)
-      : Math.min(1000, this.debounceMs);
+    // If any participant asks a question, immediately shorten debounce (300ms) for low-latency assistance
+    const delay = intent.isQuestion ? Math.min(300, this.debounceMs) : Math.min(1000, this.debounceMs);
 
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-    }
-
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
       void this.generateSuggestion();
@@ -137,8 +222,7 @@ export class SuggestionService {
     const detection = this.orchestrator.detector.detect(combined);
     const intentMeta = this.orchestrator.classifier.classify(combined);
     const isQuestion =
-      (detection.isQuestionOrInstruction || last.speaker === 'system') &&
-      intentMeta.intent !== 'ACKNOWLEDGEMENT';
+      (detection.isQuestionOrInstruction || last.speaker === 'system') && intentMeta.intent !== 'ACKNOWLEDGEMENT';
 
     return {
       isQuestion,
@@ -148,8 +232,58 @@ export class SuggestionService {
     };
   }
 
+  private prefs() {
+    return this.settingsService.getPreferences();
+  }
+
+  private profileText(): string | undefined {
+    const id = this.prefs().ai.activeProfileId;
+    return id ? this.getProfileText?.(id)?.slice(0, 6000) : undefined;
+  }
+
+  private async track<T extends { modelUsed: string; latencyMs?: number; usage?: { promptTokens: number; outputTokens: number } | undefined }>(
+    run: () => Promise<T>,
+  ): Promise<T> {
+    this.usage.requests++;
+    try {
+      const result = await run();
+      this.usage.lastLatencyMs = result.latencyMs ?? null;
+      this.usage.lastModel = result.modelUsed;
+      this.usage.promptTokens += result.usage?.promptTokens ?? 0;
+      this.usage.outputTokens += result.usage?.outputTokens ?? 0;
+      return result;
+    } catch (error) {
+      if (error instanceof GeminiError && error.kind === 'cancelled') this.usage.cancelled++;
+      else this.usage.failures++;
+      throw error;
+    } finally {
+      this.onUsage?.(this.getUsage());
+    }
+  }
+
+  private throttledDelta(requestId: string | undefined, question?: string): ((text: string) => void) | undefined {
+    if (!requestId || !this.onDelta) return undefined;
+    let last = 0;
+    let pending: string | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const send = (): void => {
+      timer = null;
+      if (pending === null) return;
+      last = Date.now();
+      this.onDelta?.(requestId, pending, question);
+      pending = null;
+    };
+    return (text) => {
+      if (!text) return;
+      pending = text;
+      const wait = DELTA_INTERVAL_MS - (Date.now() - last);
+      if (wait <= 0) send();
+      else if (!timer) timer = setTimeout(send, wait);
+    };
+  }
+
   private async generateSuggestion(): Promise<void> {
-    if (this.isProcessing || !this.activeSessionId || this.accumulatedSegments.length === 0) return;
+    if (this.isProcessing || this.paused || !this.activeSessionId || this.accumulatedSegments.length === 0) return;
 
     const now = Date.now();
     if (now - this.lastQueryTimestamp < this.minIntervalMs) {
@@ -166,229 +300,124 @@ export class SuggestionService {
     const recentSegments = this.accumulatedSegments.slice(-6);
     const lastSeg = recentSegments[recentSegments.length - 1]!;
     const recentText = recentSegments
-      .map((s) => `${s.speaker === 'system' ? '[Interviewer/Meeting]' : '[Candidate/You]'}: ${s.text}`)
+      .map((s) => `${s.speaker === 'system' ? '[Other speaker]' : '[You]'}: ${s.text}`)
       .join('\n')
       .trim();
 
-    if (recentText.length < 15 || recentText === this.lastQueriedText) {
-      return;
-    }
+    if (recentText.length < 15 || recentText === this.lastQueriedText) return;
 
     this.isProcessing = true;
     this.lastQueryTimestamp = now;
     this.lastQueriedText = recentText;
 
     const intent = this.detectQuestionAndIntent(recentSegments);
-    logDiag('AIDiag:02-Intent', 'Utterance analysis complete', {
-      isQuestion: intent.isQuestion,
-      speaker: intent.speaker,
-      segmentsAnalyzed: recentSegments.length,
-    });
+    const prefs = this.prefs();
+    const hasKey = Boolean(this.settingsService.getEffectiveGeminiKey());
 
     try {
-      const apiKey = this.settingsService.getEffectiveGeminiKey();
-      logDiag('AIDiag:03-Auth', 'Checking Gemini authentication', {
-        hasKey: Boolean(apiKey),
-        keyPrefix: apiKey ? apiKey.slice(0, 5) : 'none',
-      });
-
-      if (apiKey) {
-        const activeScreen = this.screenContextManager?.getConfirmed();
-        await this.orchestrator.processUtterance({
+      if (hasKey && prefs.privacy.allowCloudAi) {
+        // Screenshots ride along with automatic answers only when the user opted in.
+        const activeScreen =
+          prefs.ai.attachScreenToAuto && prefs.privacy.allowCloudScreenshots ? this.screenContextManager?.getConfirmed() : null;
+        const res = await this.orchestrator.processUtterance({
           text: lastSeg.text,
           speaker: lastSeg.speaker,
           mode: this.currentMode,
           context: recentText,
           sessionId: this.activeSessionId ?? undefined,
           screenshotBase64: activeScreen?.base64,
+          answerFormat: prefs.ai.answerFormat,
+          speakingTargetSec: prefs.ai.speakingTargetSec || undefined,
+          customInstructions: prefs.ai.customInstructions || undefined,
+          preparationProfile: this.profileText(),
         });
+        if (!res.ok && res.error.code !== 'CANCELLED') {
+          this.generateHeuristicSuggestion(recentText, intent, res.error.message);
+        }
       } else {
-        logDiag('AIDiag:Fallback', 'No Gemini API key configured, generating heuristic suggestion');
+        logDiag('AIDiag:Fallback', 'Cloud AI unavailable (no key or disabled), generating local heuristic tip');
         this.generateHeuristicSuggestion(recentText, intent);
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      logDiag('AIDiag:Fallback', 'Gemini query failed, falling back to heuristic', {
-        error: errMsg,
-      });
-      console.warn('[SuggestionService] Gemini query failed:', errMsg);
+      logDiag('AIDiag:Fallback', 'Gemini query failed, falling back to heuristic', { error: errMsg });
       this.generateHeuristicSuggestion(recentText, intent, errMsg);
     } finally {
       this.isProcessing = false;
     }
   }
 
-  private async queryGemini(
-    apiKey: string,
-    transcriptText: string,
-    intent: DetectedIntent,
-  ): Promise<void> {
-    const isInterview = this.currentMode === 'mock-interview';
-
-    const systemPrompt = `You are GigaAgent, an elite real-time copilot for a live ${this.currentMode}.
-Your job is to provide actionable, technically rigorous, highly relevant answers and talking points for the user.
-
-Conversation Context:
-${transcriptText}
-
-Task:
-${
-  intent.isQuestion
-    ? `The conversation contains a question or discussion point. Provide a DIRECT, high-impact technical response outline that the user can speak immediately. Give the core answer first, followed by 2-3 key technical talking points or trade-offs.`
-    : `Provide ONE high-value tactical insight or coaching point based on what was just said.`
-}
-
-Return ONLY a valid JSON object matching this schema:
-{
-  "type": "${intent.isQuestion ? 'answer_tip' : 'key_point'}",
-  "title": "Clear, informative title (under 35 chars)",
-  "content": "Actionable, concrete talking points or direct answer (2-4 clear sentences with technical depth, under 300 chars)"
-}`;
-
-    const activeScreen = this.screenContextManager?.getConfirmed();
-    const hasVision = Boolean(activeScreen);
-
-    logDiag('AIDiag:04-Request', 'Dispatching request to Gemini API', {
-      isQuestion: intent.isQuestion,
-      hasVision,
-    });
-
-    const startTime = Date.now();
-    let rawText = '';
-    let modelUsed = '';
-
-    if (activeScreen) {
-      const visionPrompt = `${systemPrompt}\n\nNote: A confirmed screenshot of the user's screen is attached. Relate your response directly to what is on screen if relevant.`;
-      const res = await this.dispatchGeminiVisionRequest(apiKey, visionPrompt, activeScreen.base64);
-      rawText = res.text;
-      modelUsed = res.modelUsed;
-    } else {
-      const res = await this.dispatchGeminiRequest(apiKey, systemPrompt);
-      rawText = res.text;
-      modelUsed = res.modelUsed;
-    }
-    const latencyMs = Date.now() - startTime;
-
-    logDiag('AIDiag:05-Response', 'Gemini response received', {
-      modelUsed,
-      latencyMs,
-      hasText: Boolean(rawText),
-      preview: rawText?.slice(0, 80),
-    });
-
-    const parsed = this.parseGeminiJson(rawText);
-    logDiag('AIDiag:06-Parse', 'Parsed Gemini JSON output', {
-      modelUsed,
-      type: parsed.type,
-      title: parsed.title,
-    });
-
-    if (parsed.title && parsed.content) {
-      this.emit({
-        type: parsed.type || (intent.isQuestion ? 'answer_tip' : 'key_point'),
-        title: parsed.title,
-        content: parsed.content,
-        source: 'gemini',
-        isQuestion: intent.isQuestion,
-        question: intent.questionText || undefined,
-        formatType: isInterview ? 'interview' : 'technical',
-        modelUsed,
-      });
-    }
-  }
-
   /**
-   * One-click or manual Ask AI functionality.
-   * Generates a direct, highly structured response using the user's question,
-   * active mode, and recent conversation context.
+   * Manual Ask AI. Streams when a requestId is supplied. Failures are returned as errors —
+   * the app never substitutes a canned "answer" for a failed request.
    */
-  async askQuestion(
-    question: string,
-    options?: {
-      mode?: SessionMode;
-      context?: string;
-      formatType?: string;
-      ignoreScreenContext?: boolean;
-    },
-  ): Promise<Result<SuggestionItem>> {
-    const apiKey = this.settingsService.getEffectiveGeminiKey();
-    if (!apiKey) {
-      return {
-        ok: false,
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'No Gemini API key is configured. Please enter your Gemini API Key in Settings.',
-        },
-      };
+  async askQuestion(question: string, rawOptions?: AskOptions & { ignoreScreenContext?: boolean }): Promise<Result<SuggestionItem>> {
+    if (!this.settingsService.getEffectiveGeminiKey()) {
+      return { ok: false, error: { code: 'INVALID_REQUEST', message: NO_KEY } };
     }
+    const prefs = this.prefs();
+    if (!prefs.privacy.allowCloudAi) return { ok: false, error: { code: 'CONSENT_REQUIRED', message: CLOUD_AI_OFF } };
 
-    const mode = options?.mode ?? this.currentMode ?? 'mock-interview';
-    const activeScreen = !options?.ignoreScreenContext
-      ? this.screenContextManager?.getConfirmed()
-      : null;
+    const options = parseAskOptions(rawOptions);
+    const mode = options.mode ?? this.currentMode ?? 'mock-interview';
+    const wantsScreen = options.useScreenContext !== false && !rawOptions?.ignoreScreenContext;
+    const activeScreen = wantsScreen && prefs.privacy.allowCloudScreenshots ? this.screenContextManager?.getConfirmed() : null;
 
     const res = await this.orchestrator.processUtterance({
       text: question,
       isManual: true,
       mode,
-      context: options?.context,
+      context: options.context,
       sessionId: this.activeSessionId ?? undefined,
       screenshotBase64: activeScreen?.base64,
+      answerFormat: options.answerFormat ?? prefs.ai.answerFormat,
+      speakingTargetSec: (options.speakingTargetSec ?? prefs.ai.speakingTargetSec) || undefined,
+      action: options.action,
+      previousAnswer: options.previousAnswer,
+      customInstructions: prefs.ai.customInstructions || undefined,
+      preparationProfile: this.profileText(),
+      requestId: options.requestId,
+      onDelta: this.throttledDelta(options.requestId, question),
     });
 
-    if (!res.ok) {
-      logDiag('AIDiag:Fallback', 'Ask AI call returned error, delivering structured fallback', {
-        error: res.error.message,
-      });
-      const fallbackItem = this.generateManualFallback(question, mode);
-      return { ok: true, value: fallbackItem };
-    }
+    if (!res.ok) return res;
     if (!res.value) {
-      const fallbackItem = this.generateManualFallback(question, mode);
-      return { ok: true, value: fallbackItem };
+      return { ok: false, error: { code: 'SOURCE_FAILED', message: 'No answer was produced. Rephrase the question and try again.' } };
     }
     return { ok: true, value: res.value };
   }
 
   /**
    * Analyzes an explicitly captured screenshot with Gemini Vision.
-   * Multi-turn aware: keeps previous questions and answers in conversation history.
+   * Requires a confirmed (or pending, when named) screenshot and the cloud-screenshot permission.
    */
-  async analyzeScreenshot(request: ScreenAnalysisRequest): Promise<Result<SuggestionItem>> {
-    const apiKey = this.settingsService.getEffectiveGeminiKey();
-    if (!apiKey) {
+  async analyzeScreenshot(request: ScreenAnalysisRequest & { requestId?: string }): Promise<Result<SuggestionItem>> {
+    if (!this.settingsService.getEffectiveGeminiKey()) {
+      return { ok: false, error: { code: 'INVALID_REQUEST', message: NO_KEY } };
+    }
+    const prefs = this.prefs();
+    if (!prefs.privacy.allowCloudAi || !prefs.privacy.allowCloudScreenshots) {
       return {
         ok: false,
         error: {
-          code: 'INVALID_REQUEST',
-          message: 'No Gemini API key is configured. Please enter your Gemini API Key in Settings.',
+          code: 'CONSENT_REQUIRED',
+          message: 'Sending screenshots to Gemini is turned off in Settings → Privacy. Turn it on to analyse this screenshot.',
         },
       };
     }
 
     let screenshot: ScreenshotData | null = null;
-    if (request.screenshotId) {
-      if (this.screenContextManager?.getConfirmed()?.id === request.screenshotId) {
-        screenshot = this.screenContextManager.getConfirmed();
-      } else if (this.screenContextManager?.getPending()?.id === request.screenshotId) {
-        screenshot = this.screenContextManager.getPending();
-      }
-    }
-
-    if (!screenshot) {
-      screenshot =
-        this.screenContextManager?.getConfirmed() ??
-        this.screenContextManager?.getPending() ??
-        null;
-    }
+    const confirmed = this.screenContextManager?.getConfirmed() ?? null;
+    if (request.screenshotId && confirmed?.id === request.screenshotId) screenshot = confirmed;
+    // A pending (not yet confirmed) screenshot is never uploaded.
+    if (!screenshot) screenshot = confirmed;
 
     if (!screenshot) {
       return {
         ok: false,
         error: {
           code: 'INVALID_REQUEST',
-          message:
-            'No screenshot is available for analysis. Please capture and confirm a screenshot first.',
+          message: 'No screenshot is available for analysis. Please capture and confirm a screenshot first.',
         },
       };
     }
@@ -401,372 +430,128 @@ Return ONLY a valid JSON object matching this schema:
       context: request.context,
       sessionId: this.activeSessionId ?? undefined,
       screenshotBase64: screenshot.base64,
+      answerFormat: prefs.ai.answerFormat,
+      customInstructions: prefs.ai.customInstructions || undefined,
+      requestId: request.requestId,
+      onDelta: this.throttledDelta(request.requestId, request.question),
     });
 
     if (!res.ok) return res;
     if (!res.value) {
-      return {
-        ok: true,
-        value: {
-          id: `vis_dup_${Date.now()}`,
-          sessionId: this.activeSessionId || 'screen_query',
-          createdAt: new Date().toISOString(),
-          type: 'answer_tip',
-          title: 'Screen Analysis',
-          content: 'This screen question was recently analyzed.',
-          source: 'gemini',
-          hasVisualContext: true,
-        },
-      };
+      return { ok: false, error: { code: 'SOURCE_FAILED', message: 'No analysis was produced. Try asking a more specific question.' } };
     }
     return { ok: true, value: res.value };
   }
 
-  private generateManualFallback(question: string, mode: SessionMode): SuggestionItem {
-    const isCode = /code|function|implement|algorithm|binary|tree|array|list|class|method|dsa|stack/i.test(question);
-    const title = question.length > 40 ? `${question.slice(0, 38)}…` : question;
-    const content = isCode
-      ? `### Implementation Outline\n\nDirect answer for **"${question}"**:\n\n1. **Approach**: State constraints, optimal data structure, and edge conditions.\n2. **Complexity**: Aim for minimal runtime and $O(1)$ auxiliary space if possible.\n3. **Solution Code**:\n\`\`\`typescript\n// Solution for: ${title}\nexport function solution() {\n  // Implementation\n}\n\`\`\`\n*Live AI connection is syncing.*`
-      : `### Key Talking Points\n\n1. **Direct Answer**: Concise, authoritative response addressing "${question}".\n2. **Mechanism & Trade-offs**: Core architectural principles and real-world considerations.\n3. **Follow-up / Recommendation**: Practical edge cases and next steps.\n\n*Live AI connection is syncing.*`;
-
-    return {
-      id: `fallback_${Date.now()}_${++this.suggestionCounter}`,
-      sessionId: this.activeSessionId || 'manual_query',
-      createdAt: new Date().toISOString(),
-      type: 'answer_tip',
-      title,
-      content,
-      source: 'heuristic',
-      isQuestion: true,
-      question,
-      formatType: isCode ? 'code' : 'technical',
-    };
-  }
-
-  private createManagedAbortController(timeoutMs: number): AbortController {
-    const controller = new AbortController();
-    this.activeAbortControllers.add(controller);
-    const timer = setTimeout(() => {
-      controller.abort(new Error(`Gemini request timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    controller.signal.addEventListener('abort', () => {
-      clearTimeout(timer);
-      this.activeAbortControllers.delete(controller);
-    });
-    return controller;
-  }
-
-  private abortAllRequests(): void {
-    for (const controller of this.activeAbortControllers) {
-      try {
-        controller.abort(new Error('Request cancelled by user or session shutdown.'));
-      } catch {}
+  /** Runs a mode tool (summary, flashcards, answer evaluation…) over supplied text or the transcript. */
+  async runTool(request: RunToolRequest): Promise<Result<SuggestionItem>> {
+    const tool = getModeTool(request.tool);
+    if (!tool) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Unknown tool.' } };
+    if (!this.settingsService.getEffectiveGeminiKey()) {
+      return { ok: false, error: { code: 'INVALID_REQUEST', message: NO_KEY } };
     }
-    this.activeAbortControllers.clear();
-  }
+    const prefs = this.prefs();
+    if (!prefs.privacy.allowCloudAi) return { ok: false, error: { code: 'CONSENT_REQUIRED', message: CLOUD_AI_OFF } };
 
-  /**
-   * Dispatches multimodal generateContent request with automatic fallback across vision-capable models.
-   */
-  private async dispatchGeminiVisionRequest(
-    apiKey: string,
-    prompt: string,
-    base64Image: string,
-  ): Promise<{ text: string; modelUsed: string }> {
-    const candidateModels = [
-      'gemini-flash-lite-latest',
-      'gemini-flash-latest',
-      'gemini-3.8-flash',
-      'gemini-3.5-flash-lite',
-      'gemini-2.5-flash',
-    ];
-    let lastError: Error | null = null;
-    let attempt = 0;
-
-    for (const model of candidateModels) {
-      attempt++;
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-      const controller = this.createManagedAbortController(8000);
-      try {
-        const response = await fetch(url, {
-          method: 'POST',
-          signal: controller.signal,
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey,
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    inlineData: {
-                      mimeType: 'image/jpeg',
-                      data: base64Image,
-                    },
-                  },
-                  {
-                    text: prompt,
-                  },
-                ],
-              },
-            ],
-            generationConfig: {
-              temperature: 0.2,
-              maxOutputTokens: 2048,
-              responseMimeType: 'application/json',
-            },
-          }),
-        });
-
-        if (response.status === 404 || response.status === 503 || response.status === 429) {
-          const errBody = await response.text().catch(() => '');
-          logDiag(
-            'AIDiag:ModelFallback',
-            `Vision model ${model} returned HTTP ${response.status}, applying backoff...`,
-            {
-              model,
-              status: response.status,
-              details: errBody.slice(0, 100),
-            },
-          );
-          lastError = new Error(
-            `Vision model ${model} returned HTTP ${response.status}: ${errBody.slice(0, 100)}`,
-          );
-          // Apply exponential backoff for rate limits or server overload
-          if (response.status === 429 || response.status === 503) {
-            await new Promise((r) => setTimeout(r, Math.min(2000, 500 * attempt)));
-          }
-          continue;
-        }
-
-        if (!response.ok) {
-          const errBody = await response.text().catch(() => '');
-          throw new Error(
-            `Gemini Vision HTTP ${response.status} (${response.statusText}): ${errBody.slice(0, 150)}`,
-          );
-        }
-
-        const data = (await response.json()) as {
-          candidates?: Array<{
-            content?: {
-              parts?: Array<{ text?: string }>;
-            };
-          }>;
-        };
-
-        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!rawText) {
-          throw new Error(`Gemini Vision returned empty candidate content for ${model}`);
-        }
-
-        return { text: rawText, modelUsed: model };
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        const msg = lastError.message;
-        if (msg.includes('404') || msg.includes('503') || msg.includes('429')) {
-          continue;
-        }
-        throw lastError;
-      }
-    }
-
-    throw lastError || new Error('No supported Gemini Vision model found on endpoints.');
-  }
-
-  /**
-   * Dispatches generateContent request with automatic fallback across supported model versions
-   * (e.g. gemini-flash-lite-latest -> gemini-3.5-flash-lite -> gemini-flash-latest -> gemini-3.8-flash)
-   * to guard against model deprecations and temporary demand spikes.
-   */
-  private async dispatchGeminiRequest(
-    apiKey: string,
-    prompt: string,
-  ): Promise<{ text: string; modelUsed: string }> {
-    const candidateModels = [
-      'gemini-flash-lite-latest',
-      'gemini-flash-latest',
-      'gemini-3.8-flash',
-      'gemini-3.5-flash-lite',
-      'gemini-2.5-flash',
-    ];
-    let lastError: Error | null = null;
-    let attempt = 0;
-
-    for (const model of candidateModels) {
-      attempt++;
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-      const controller = this.createManagedAbortController(6000);
-      try {
-        const response = await fetch(url, {
-          method: 'POST',
-          signal: controller.signal,
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey,
-          },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-              temperature: 0.3,
-              maxOutputTokens: 1024,
-              responseMimeType: 'application/json',
-            },
-          }),
-        });
-
-        if (response.status === 404 || response.status === 503 || response.status === 429) {
-          const errBody = await response.text().catch(() => '');
-          logDiag('AIDiag:ModelFallback', `Model ${model} returned HTTP ${response.status}, applying backoff...`, {
-            model,
-            status: response.status,
-            details: errBody.slice(0, 100),
-          });
-          lastError = new Error(`Model ${model} returned HTTP ${response.status}: ${errBody.slice(0, 100)}`);
-          if (response.status === 429 || response.status === 503) {
-            await new Promise((r) => setTimeout(r, Math.min(2000, 500 * attempt)));
-          }
-          continue;
-        }
-
-        if (!response.ok) {
-          const errBody = await response.text().catch(() => '');
-          throw new Error(`Gemini HTTP ${response.status} (${response.statusText}): ${errBody.slice(0, 150)}`);
-        }
-
-        const data = (await response.json()) as {
-          candidates?: Array<{
-            content?: {
-              parts?: Array<{ text?: string }>;
-            };
-          }>;
-        };
-
-        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!rawText) {
-          throw new Error(`Gemini returned empty candidate content for ${model}`);
-        }
-
-        return { text: rawText, modelUsed: model };
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        const msg = lastError.message;
-        if (msg.includes('404') || msg.includes('503') || msg.includes('429')) {
-          continue;
-        }
-        throw lastError;
-      }
-    }
-
-    throw lastError || new Error('No supported Gemini model found on endpoints.');
-  }
-
-  /**
-   * Explicit test action for user or diagnostic verification.
-   * Directly queries Gemini with a known technical question to isolate network/auth from conversation detection.
-   */
-  async testGeminiConnection(
-    customQuestion = 'Explain how Raft consensus handles leader election during a network partition.',
-  ): Promise<Result<SuggestionItem>> {
-    const apiKey = this.settingsService.getEffectiveGeminiKey();
-    if (!apiKey) {
+    const material = (request.input ?? this.getTranscriptText?.(request.sessionId) ?? '').trim();
+    const profile = this.profileText();
+    if (material.length < 20 && !(tool.id === 'interview-question' && profile)) {
       return {
         ok: false,
         error: {
           code: 'INVALID_REQUEST',
-          message: 'No Gemini API key is configured. Please enter your Gemini API Key in Settings.',
+          message:
+            tool.input === 'transcript'
+              ? 'There is not enough transcript yet. Start a session or open a past one first.'
+              : 'Add some text (or record some transcript) for this tool to work on.',
         },
       };
     }
 
-    logDiag('AIDiag:Test', 'Executing explicit Gemini test query', { question: customQuestion });
-
+    const requestId = request.requestId ?? `tool_${Date.now()}`;
+    const controller = new AbortController();
+    this.toolControllers.set(requestId, controller);
+    const onDelta = this.throttledDelta(request.requestId, tool.label);
     try {
-      const prompt = `You are a real-time copilot. Answer this technical question directly with structured key points:
-"${customQuestion}"
+      const prompt = buildToolPrompt({
+        tool,
+        // Keep the most recent part when the transcript is very long (bounded prompt size).
+        material: (material || 'No transcript yet. Use the preparation profile only.').slice(-24_000),
+        profile,
+        customInstructions: prefs.ai.customInstructions || undefined,
+      });
+      const result = await this.track(() =>
+        this.client.generate({
+          prompt,
+          signal: controller.signal,
+          onDelta: onDelta ? (acc) => onDelta(streamingBody(acc)) : undefined,
+          maxOutputTokens: 3072,
+          temperature: 0.3,
+          preferredModel: prefs.ai.model || undefined,
+        }),
+      );
+      const parsed = parseAnswer(result.text);
+      const item: SuggestionItem = {
+        id: `tool_${Date.now()}_${++this.suggestionCounter}`,
+        sessionId: request.sessionId || this.activeSessionId || 'tool_query',
+        createdAt: new Date().toISOString(),
+        type: tool.id === 'action-items' ? 'action_item' : tool.id === 'follow-up-questions' ? 'follow_up' : 'key_point',
+        title: parsed.title || tool.label,
+        content: parsed.content || result.text,
+        source: 'gemini',
+        question: tool.label,
+        formatType: tool.mode === 'meeting' ? 'meeting' : 'points',
+        modelUsed: result.modelUsed,
+        tool: tool.id,
+        requestId,
+      };
+      this.onSuggestion(item);
+      return { ok: true, value: item };
+    } catch (error) {
+      const cancelled = error instanceof GeminiError && error.kind === 'cancelled';
+      return {
+        ok: false,
+        error: { code: cancelled ? 'CANCELLED' : 'SOURCE_FAILED', message: describeGeminiError(error) },
+      };
+    } finally {
+      this.toolControllers.delete(requestId);
+    }
+  }
 
-Return ONLY a valid JSON object matching this schema:
-{
-  "type": "answer_tip",
-  "title": "Concise title",
-  "content": "Direct technical answer with 2-3 key talking points (under 280 chars)"
-}`;
-
-      const { text, modelUsed } = await this.dispatchGeminiRequest(apiKey, prompt);
-      const parsed = this.parseGeminiJson(text);
-
+  /**
+   * Explicit connection test. Sends one short request so network/auth problems can be told apart
+   * from conversation detection. This is a real (billable) API call, made only on user request.
+   */
+  async testGeminiConnection(
+    customQuestion = 'Reply with one short sentence confirming the connection works.',
+  ): Promise<Result<SuggestionItem>> {
+    if (!this.settingsService.getEffectiveGeminiKey()) {
+      return { ok: false, error: { code: 'INVALID_REQUEST', message: NO_KEY } };
+    }
+    logDiag('AIDiag:Test', 'Executing explicit Gemini test query');
+    try {
+      const result = await this.track(() =>
+        this.client.generate({
+          prompt: `${customQuestion}\n\nRespond in plain text, at most 40 words.`,
+          maxOutputTokens: 256,
+          preferredModel: this.prefs().ai.model || undefined,
+        }),
+      );
       const item: SuggestionItem = {
         id: `test_sug_${Date.now()}`,
         sessionId: this.activeSessionId || 'test_session',
         createdAt: new Date().toISOString(),
         type: 'answer_tip',
-        title: `[${modelUsed}] ${parsed.title || 'Technical Response'}`,
-        content: parsed.content || 'Successfully verified Gemini connection.',
-        source: 'gemini',
-        isQuestion: true,
+        title: `Connected · ${result.modelUsed}`,
+        content: parseAnswer(result.text).content || result.text,
+        source: 'test',
+        modelUsed: result.modelUsed,
       };
-
-      logDiag('AIDiag:Test', 'Gemini test query succeeded', {
-        modelUsed,
-        title: item.title,
-        content: item.content,
-      });
-
-      this.onSuggestion(item);
+      logDiag('AIDiag:Test', 'Gemini test query succeeded', { modelUsed: result.modelUsed, latencyMs: result.latencyMs });
       return { ok: true, value: item };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logDiag('AIDiag:Test', 'Gemini test query failed', { error: msg });
-      return {
-        ok: false,
-        error: { code: 'SOURCE_FAILED', message: `Gemini test failed: ${msg}` },
-      };
-    }
-  }
-
-  private parseGeminiJson(rawText: string): {
-    type?: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
-    title?: string;
-    content?: string;
-    formatType?: string;
-  } {
-    try {
-      const cleaned = rawText
-        .replace(/^```json\s*/i, '')
-        .replace(/\s*```$/i, '')
-        .trim();
-      let parsed = JSON.parse(cleaned);
-      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object' && parsed[0] !== null) {
-        parsed = parsed[0];
-      }
-      return parsed as {
-        type?: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
-        title?: string;
-        content?: string;
-        formatType?: string;
-      };
-    } catch {
-      // Extract first JSON block if surrounded by explanatory text
-      const match = rawText.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
-      if (match) {
-        try {
-          let parsed = JSON.parse(match[0]);
-          if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object' && parsed[0] !== null) {
-            parsed = parsed[0];
-          }
-          return parsed as {
-            type?: 'answer_tip' | 'action_item' | 'key_point' | 'follow_up';
-            title?: string;
-            content?: string;
-            formatType?: string;
-          };
-        } catch {}
-      }
-      return {
-        type: 'answer_tip',
-        title: 'Technical Copilot Tip',
-        content: rawText.slice(0, 250),
-      };
+      logDiag('AIDiag:Test', 'Gemini test query failed', { error: err instanceof Error ? err.message : String(err) });
+      return { ok: false, error: { code: 'SOURCE_FAILED', message: `Gemini test failed: ${describeGeminiError(err)}` } };
     }
   }
 
@@ -892,7 +677,8 @@ Return ONLY a valid JSON object matching this schema:
   }
 
   destroy(): void {
-    this.abortAllRequests();
+    this.cancel();
+    this.client.abortAll();
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;

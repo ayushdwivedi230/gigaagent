@@ -22,8 +22,8 @@ export class ModeConfigurationService {
             if (!meta.needsAnswer) return false;
             return true;
           },
-          systemDirective: `You are GigaAgent, an elite real-time copilot for a live job interview.
-Your goal is to provide articulate, technically rigorous, natural answers suitable for speaking aloud.
+          systemDirective: `You are GigaAgent, an interview-practice coach running a mock interview session.
+Your goal is to help the user rehearse articulate, technically rigorous, natural answers they can practise aloud.
 - Give the direct core answer in the very first sentence.
 - Use 2-4 crisp bullet points detailing implementation, mechanisms, or trade-offs.
 - For behavioral questions, use Situation, Task, Action, Result (STAR).

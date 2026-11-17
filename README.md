@@ -1,36 +1,15 @@
-# AI Meeting Assistant
+# GigaAgent
 
-A Windows desktop app (Electron + React + TypeScript) for **mock interviews, meetings where recording and AI assistance are permitted, and study sessions**. It will transcribe speech, summarise discussions and suggest responses.
+A Windows desktop copilot (Electron + React + TypeScript) for **mock interviews, meetings where recording and AI assistance are permitted, and study sessions**. It transcribes speech, drafts answers you can refine, and keeps everything in a local library.
 
-**Design principles that are part of the product, not afterthoughts**
+> **3.0 status:** code complete and unit-tested, but not yet run on real Electron — follow RESUME.md first. Screenshots in `docs/screenshots/` are headless renders of the real UI with sample data.
 
-- Recording is always visible: a full-width banner at the top of the window and a `●` in the window title / taskbar while a session runs.
-- The app has no hidden or stealth mode and no features aimed at evading meeting or exam monitoring. Use it only where recording and AI assistance are allowed, and tell other participants.
-- Everything stays on your computer except what is sent to the Gemini API (from milestone 3).
-- You can delete any session, or all history, at any time.
+**Principles**
+- Recording is always visible to you: session bar, window title and taskbar.
+- **Ghost Mode** uses the operating system's window capture-exclusion flag so this window is left out of screen captures made on this computer. It is a privacy control, not a way to be undetectable: it does not hide the app from Task Manager, monitoring/proctoring software or a camera. Use the app only where recording and AI assistance are allowed, and tell other participants.
+- Data stays on this computer except what you send to Gemini / Deepgram with your own keys; each can be switched off in Settings → Privacy.
 
-## Status
-
-| # | Milestone | State |
-|---|-----------|-------|
-| 1 | Working desktop UI (start/stop, live transcript view, history, deletion) | **Done**. Scripted demo source & history |
-| 2 | Microphone permission, capture, streaming transcription | **Done**. WebAudio AudioWorklet 16kHz PCM capture + Deepgram WebSocket streaming & voice activity detection |
-| 3 | Gemini summaries and context-aware suggestions, API usage tracking | **Done**. Real-time Gemini 1.5 Flash Copilot suggestions (STAR frameworks, action items, key points) |
-| 4 | Document retrieval, screenshot analysis (OpenCV + vision model) | Planned |
-| 5 | SQLite history, security review, electron-builder Windows installer | In progress |
-
-## Requirements
-
-- Windows 10/11 (development also works on macOS/Linux; packaging targets Windows)
-- Node.js 22 LTS or newer, npm 10+
-
-## Features
-
-- **Real-Time Microphone Audio Capture**: Captured in sandboxed renderer via `AudioContext` and processed in an `AudioWorkletProcessor` on Chromium's real-time audio thread into 16kHz 16-bit PCM chunks.
-- **Deepgram Live Streaming STT**: Low-latency WebSocket streaming (`nova-2` / `nova-3`) with interim and final transcript segmentation.
-- **Context-Aware Gemini Suggestions**: Gemini 1.5 Flash generates actionable interview tips, STAR framework suggestions, and meeting action items debounced in real time.
-- **Encrypted Credential Storage**: API credentials (`DEEPGRAM_API_KEY`, `GEMINI_API_KEY`) encrypted at rest via Windows DPAPI / Electron `safeStorage`.
-- **Local Fallback Mode**: Energy-based voice detection and heuristic guidance when testing offline without API keys.
+See CHANGELOG.md, MASTER_ARCHITECTURE.md, SECURITY_REPORT.md.
 
 ## Install and run
 
@@ -82,7 +61,7 @@ tests/               unit tests
 
 ## Windows packaging
 
-Added in milestone 5 (electron-builder, NSIS installer, `npm run package`). This README will document code-signing, the installer output and uninstall behaviour there.
+`npm i -D electron-builder` then `npm run package` → `release/`. Config: `electron-builder.yml` (per-user NSIS, user data kept on uninstall). Code signing and an icon are still required before distribution.
 
 ## Troubleshooting
 

@@ -27,6 +27,8 @@ interface ActiveSession {
   summary: SessionSummary;
   source: TranscriptSource;
   finalIds: Set<string>;
+  /** Recent finalized text kept in memory for mode tools (bounded). */
+  recent: TranscriptSegment[];
 }
 
 type Listener = (event: SessionEvent) => void;
@@ -38,6 +40,7 @@ type Listener = (event: SessionEvent) => void;
 export class SessionService {
   private status: SessionStatus = 'idle';
   private active: ActiveSession | null = null;
+  private paused = false;
   private readonly listeners = new Set<Listener>();
   private readonly repository: SessionRepository;
   private readonly createSource: (mode: SessionMode, sourceKind?: SourceKind) => TranscriptSource;
@@ -60,7 +63,32 @@ export class SessionService {
     return {
       status: this.status,
       activeSession: this.active ? { ...this.active.summary } : null,
+      ...(this.paused ? { paused: true } : {}),
     };
+  }
+
+  isPaused(): boolean {
+    return this.paused;
+  }
+
+  /** Pause/resume intake for the running session. Audio and transcript arriving while paused are discarded. */
+  setPaused(paused: boolean): Result<{ paused: boolean }> {
+    if (this.status !== 'active' || !this.active) return err('NO_ACTIVE_SESSION', 'No session is running.');
+    if (this.paused !== paused) {
+      this.paused = paused;
+      this.emitStatus();
+    }
+    return ok({ paused: this.paused });
+  }
+
+  /** Speaker-labelled text of the live session, or of a stored session, for AI tools. */
+  getTranscriptText(sessionId?: string): string {
+    const live = this.active && (!sessionId || sessionId === this.active.summary.id) ? this.active.recent : null;
+    const segments = live ?? (sessionId ? (this.repository.get(sessionId)?.segments ?? []) : []);
+    return segments
+      .filter((s) => s.isFinal)
+      .map((s) => `${s.speaker === 'system' ? 'Other speaker' : 'You'}: ${s.text}`)
+      .join('\n');
   }
 
   listSessions(): SessionSummary[] {
@@ -87,7 +115,8 @@ export class SessionService {
       endedAt: null,
       segmentCount: 0,
     };
-    const active: ActiveSession = { summary, source, finalIds: new Set() };
+    const active: ActiveSession = { summary, source, finalIds: new Set(), recent: [] };
+    this.paused = false;
 
     // Claim the slot synchronously so a double-click cannot start two sources.
     this.status = 'starting';
@@ -138,6 +167,7 @@ export class SessionService {
     active.summary.endedAt = this.now().toISOString();
     this.repository.update(active.summary);
     this.active = null;
+    this.paused = false;
     this.status = 'idle';
     this.emitStatus();
     return ok({ ...active.summary });
@@ -165,14 +195,19 @@ export class SessionService {
 
   emitEvent(event: SessionEvent): void {
     if (event.type === 'suggestion') {
-      this.repository.upsertSuggestion?.(event.suggestion);
+      try {
+        this.repository.upsertSuggestion?.(event.suggestion);
+      } catch (cause) {
+        // Storage problems must never swallow an answer the user is waiting for.
+        console.error('[session] failed to persist suggestion', cause);
+      }
     }
     this.emit(event);
   }
 
   private handleSegment(active: ActiveSession, raw: RawSegment): void {
     // Ignore anything a source emits after its session ended.
-    if (this.active !== active) return;
+    if (this.active !== active || this.paused) return;
     const segment: TranscriptSegment = {
       ...raw,
       speaker: raw.speaker || 'user',
@@ -181,6 +216,8 @@ export class SessionService {
     this.repository.upsertSegment(segment);
     if (segment.isFinal && !active.finalIds.has(segment.id)) {
       active.finalIds.add(segment.id);
+      active.recent.push(segment);
+      if (active.recent.length > 600) active.recent = active.recent.slice(-400);
       active.summary.segmentCount = active.finalIds.size;
       this.repository.update(active.summary);
     }

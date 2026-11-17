@@ -1,0 +1,4 @@
+# Accessibility report (target: WCAG 2.2 AA)
+**Implemented:** semantic buttons/labels everywhere; visible focus ring; Tab order follows layout; dialogs trap focus, close on Esc, restore focus; tabs/radiogroups/switches/meter/separator roles with arrow-key support; one polite live region for status ("Answer ready") — streamed text is not announced; errors use `role="alert"`; recording/paused/Ghost states shown as text + icon, not colour alone; text scale 90–200% with reflow; reduced motion (system or setting); dark/light/high-contrast themes + forced-colors support; text tokens chosen for ≥4.5:1.
+**Evidence:** headless render at 100% and 200%, three themes, no clipped controls detected by an automated overflow check.
+**Not verified:** real NVDA/Narrator sessions, automated axe scan, contrast of every accent/theme combination, full keyboard-only walkthrough in Electron. Treat AA as a target, not a claim.

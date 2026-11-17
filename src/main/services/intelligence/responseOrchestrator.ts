@@ -8,12 +8,32 @@ import { ModeConfigurationService } from './modeConfigurationService';
 import { PromptBuilder } from './promptBuilder';
 import { ResponseQualityController } from './responseQualityController';
 import type { OrchestrationRequest } from './types';
+import { parseAnswer, streamingBody } from './answerParser';
+import { formatTypeForIntent } from './promptBuilder';
 import { logDiag } from '../diagnosticsLogger';
+
+export interface RequesterOptions {
+  signal?: AbortSignal | undefined;
+  onDelta?: ((accumulated: string) => void) | undefined;
+  json?: boolean | undefined;
+  preferredModel?: string | undefined;
+  maxOutputTokens?: number | undefined;
+}
+
+export type GeminiRequester = (
+  prompt: string,
+  screenBase64?: string,
+  options?: RequesterOptions,
+) => Promise<{ text: string; modelUsed: string }>;
 
 export interface ResponseOrchestratorOptions {
   onEmitSuggestion: (item: SuggestionItem) => void;
-  geminiRequester: (prompt: string, screenBase64?: string) => Promise<{ text: string; modelUsed: string }>;
+  geminiRequester: GeminiRequester;
+  /** Maps a thrown provider error to a user-facing message + whether it was a cancellation. */
+  describeError?: (error: unknown) => { message: string; cancelled: boolean };
 }
+
+const MAX_TOKENS: Record<string, number> = { quick: 512, natural: 1536, structured: 2048, 'deep-dive': 4096 };
 
 export class ResponseOrchestrator {
   readonly classifier = new IntentClassifier();
@@ -26,18 +46,38 @@ export class ResponseOrchestrator {
   readonly qualityController = new ResponseQualityController();
 
   private readonly onEmitSuggestion: (item: SuggestionItem) => void;
-  private readonly geminiRequester: (prompt: string, screenBase64?: string) => Promise<{ text: string; modelUsed: string }>;
+  private readonly geminiRequester: GeminiRequester;
+  private readonly describeError: (error: unknown) => { message: string; cancelled: boolean };
+  private readonly inFlight = new Map<string, AbortController>();
   private suggestionCounter = 0;
 
   constructor(options: ResponseOrchestratorOptions) {
     this.onEmitSuggestion = options.onEmitSuggestion;
     this.geminiRequester = options.geminiRequester;
+    this.describeError =
+      options.describeError ??
+      ((error) => ({ message: `Conversation Intelligence error: ${error instanceof Error ? error.message : String(error)}`, cancelled: false }));
+  }
+
+  /** Cancels one in-flight answer, or all of them when no id is given. Returns how many were cancelled. */
+  cancel(requestId?: string): number {
+    const targets = requestId ? [requestId].filter((id) => this.inFlight.has(id)) : [...this.inFlight.keys()];
+    for (const id of targets) {
+      this.inFlight.get(id)?.abort();
+      this.inFlight.delete(id);
+    }
+    return targets.length;
+  }
+
+  get inFlightCount(): number {
+    return this.inFlight.size;
   }
 
   setSession(sessionId: string | null, mode: SessionMode = 'mock-interview'): void {
     this.stateManager.setSession(sessionId, mode);
     this.contextManager.reset();
     this.duplicateGuard.clear();
+    this.cancel();
   }
 
   setMode(mode: SessionMode): void {
@@ -103,11 +143,16 @@ export class ResponseOrchestrator {
     // Step 5: Start request tracking
     const reqId = this.stateManager.startRequest();
     this.duplicateGuard.markInFlight(text);
+    const requestKey = request.requestId ?? `auto_${reqId}`;
+    const controller = new AbortController();
+    this.inFlight.set(requestKey, controller);
+    const isRevision = Boolean(request.action && request.action !== 'regenerate' && request.previousAnswer);
 
     try {
       // Step 6: Context retrieval
       const priorContext = request.context || this.contextManager.getContextForPrompt(intentMeta);
       const hasScreen = Boolean(request.screenshotBase64);
+      const streaming = Boolean(request.onDelta);
 
       // Step 7: Construct tailored prompt
       const prompt = this.promptBuilder.buildPrompt({
@@ -115,6 +160,13 @@ export class ResponseOrchestrator {
         profile,
         priorContext,
         hasScreenContext: hasScreen,
+        answerFormat: request.answerFormat,
+        speakingTargetSec: request.speakingTargetSec,
+        action: request.action,
+        previousAnswer: request.previousAnswer,
+        customInstructions: request.customInstructions,
+        preparationProfile: request.preparationProfile,
+        output: streaming ? 'markdown' : 'json',
       });
 
       logDiag('Orchestrator:PromptBuilt', 'Constructed tailored prompt', {
@@ -123,17 +175,25 @@ export class ResponseOrchestrator {
         hasPriorContext: Boolean(priorContext),
         hasScreen,
         reqId,
+        promptChars: prompt.length,
       });
 
-      // Step 8: Call Gemini with timeout and model fallback
-      let { text: rawResponse, modelUsed } = await this.geminiRequester(prompt, request.screenshotBase64);
+      const requesterOptions: RequesterOptions = {
+        signal: controller.signal,
+        json: !streaming,
+        preferredModel: request.preferredModel,
+        maxOutputTokens: MAX_TOKENS[request.answerFormat ?? 'structured'] ?? 2048,
+        onDelta: streaming ? (acc) => request.onDelta?.(streamingBody(acc)) : undefined,
+      };
 
-      // Parse JSON response
-      let parsed = this.parseJson(rawResponse);
+      // Step 8: Call Gemini with timeout and model fallback
+      let { text: rawResponse, modelUsed } = await this.geminiRequester(prompt, request.screenshotBase64, requesterOptions);
+
+      let parsed = parseAnswer(rawResponse);
       let content = parsed.content || rawResponse;
 
-      // Step 9: Response Quality Controller validation
-      const quality = this.qualityController.validate(content, intentMeta);
+      // Step 9: Response Quality Controller validation (skipped for revisions of an existing answer)
+      const quality = isRevision ? { valid: true as const } : this.qualityController.validate(content, intentMeta);
       if (!quality.valid && quality.retryInstruction) {
         logDiag('Orchestrator:QualityRetry', 'Retrying response due to quality failure', {
           reason: quality.reason,
@@ -141,20 +201,20 @@ export class ResponseOrchestrator {
         });
 
         const retryPrompt = `${prompt}\n\nIMPORTANT CORRECTION FROM QUALITY CONTROLLER:\n${quality.retryInstruction}`;
-        const retryResult = await this.geminiRequester(retryPrompt, request.screenshotBase64);
+        const retryResult = await this.geminiRequester(retryPrompt, request.screenshotBase64, requesterOptions);
         rawResponse = retryResult.text;
         modelUsed = retryResult.modelUsed;
-        parsed = this.parseJson(rawResponse);
+        parsed = parseAnswer(rawResponse);
         content = parsed.content || rawResponse;
       }
 
       // Step 10: Check if superseded by a newer question
       if (!this.stateManager.completeRequest(reqId, text)) {
-        logDiag('Orchestrator:Stale', 'Discarding stale response superseded by newer question', {
-          reqId,
-          text,
-        });
-        return { ok: true, value: null };
+        logDiag('Orchestrator:Stale', 'Discarding stale response superseded by newer question', { reqId });
+        this.duplicateGuard.releaseInFlight(text);
+        return request.isManual
+          ? { ok: false, error: { code: 'CANCELLED', message: 'This answer was replaced by a newer question.' } }
+          : { ok: true, value: null };
       }
 
       // Step 11: Record completed turn
@@ -174,54 +234,36 @@ export class ResponseOrchestrator {
         source: 'gemini',
         isQuestion: true,
         question: text,
-        formatType: (parsed.formatType as any) || (intentMeta.expectedResponseFormat as any) || 'technical',
+        formatType: ((parsed.formatType as SuggestionItem['formatType']) || formatTypeForIntent(intentMeta.intent)) ?? 'technical',
         modelUsed,
         hasVisualContext: hasScreen,
         intent: intentMeta.intent,
-        programmingLanguage: intentMeta.programmingLanguage,
         followUpSuggestions: followUps,
       };
+      if (intentMeta.programmingLanguage) suggestionItem.programmingLanguage = intentMeta.programmingLanguage;
+      if (request.answerFormat) suggestionItem.answerFormat = request.answerFormat;
+      if (request.speakingTargetSec) suggestionItem.speakingTargetSec = request.speakingTargetSec;
+      if (request.action) suggestionItem.action = request.action;
+      if (request.requestId) suggestionItem.requestId = request.requestId;
 
       this.onEmitSuggestion(suggestionItem);
       return { ok: true, value: suggestionItem };
     } catch (err) {
       this.duplicateGuard.releaseInFlight(text);
       this.stateManager.completeRequest(reqId);
-      const errMsg = err instanceof Error ? err.message : String(err);
-      logDiag('Orchestrator:Error', 'Error processing conversation intelligence pipeline', { error: errMsg });
+      const described = this.describeError(err);
+      const cancelled = described.cancelled || controller.signal.aborted;
+      logDiag('Orchestrator:Error', cancelled ? 'Answer generation cancelled' : 'Error processing conversation intelligence pipeline', {
+        error: err instanceof Error ? err.message : String(err),
+      });
       return {
         ok: false,
-        error: {
-          code: 'SOURCE_FAILED',
-          message: `Conversation Intelligence error: ${errMsg}`,
-        },
+        error: cancelled
+          ? { code: 'CANCELLED', message: 'The answer was cancelled.' }
+          : { code: 'SOURCE_FAILED', message: described.message },
       };
-    }
-  }
-
-  private parseJson(raw: string): { title?: string; formatType?: string; content?: string } {
-    try {
-      const cleaned = raw
-        .replace(/^```json\s*/i, '')
-        .replace(/\s*```$/i, '')
-        .trim();
-      let parsed = JSON.parse(cleaned);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        parsed = parsed[0];
-      }
-      return parsed;
-    } catch {
-      const match = raw.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
-      if (match) {
-        try {
-          let parsed = JSON.parse(match[0]);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            parsed = parsed[0];
-          }
-          return parsed;
-        } catch {}
-      }
-      return { content: raw };
+    } finally {
+      this.inFlight.delete(requestKey);
     }
   }
 

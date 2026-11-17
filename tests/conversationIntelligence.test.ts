@@ -413,7 +413,8 @@ test('29. Mode Configuration: Profiles enforce mode-specific behavioral directiv
   const modeService = new ModeConfigurationService();
 
   const interviewProfile = modeService.getProfile('mock-interview');
-  assert.match(interviewProfile.systemDirective, /live job interview/i);
+  // 3.0: the interview profile is explicitly a practice coach (product positioning: mock interviews).
+  assert.match(interviewProfile.systemDirective, /mock interview/i);
 
   const meetingProfile = modeService.getProfile('meeting');
   assert.match(meetingProfile.systemDirective, /meeting intelligence copilot/i);

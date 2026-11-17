@@ -1,5 +1,5 @@
 import { Component } from 'react';
-import type { ReactNode, ErrorInfo } from 'react';
+import type { ErrorInfo, ReactNode } from 'react';
 
 interface Props {
   children: ReactNode;
@@ -8,45 +8,38 @@ interface State {
   error: Error | null;
 }
 
-/** Catches render-time crashes and shows them instead of a blank screen. */
+/** Last line of defence: a render crash shows a recoverable message instead of a blank window. */
 export class ErrorBoundary extends Component<Props, State> {
-  constructor(props: Props) {
-    super(props);
-    this.state = { error: null };
-  }
+  override state: State = { error: null };
 
   static getDerivedStateFromError(error: Error): State {
     return { error };
   }
 
-  override componentDidCatch(error: Error, info: ErrorInfo) {
+  override componentDidCatch(error: Error, info: ErrorInfo): void {
     console.error('[ErrorBoundary] Render crashed:', error, info.componentStack);
+    window.api?.diag?.log('RenderCrash', error.message.slice(0, 300));
   }
 
-  override render() {
+  override render(): ReactNode {
     const { error } = this.state;
-    if (error) {
-      return (
-        <div style={{
-          padding: '32px',
-          fontFamily: 'monospace',
-          background: '#14212e',
-          color: '#f8fafb',
-          height: '100%',
-          boxSizing: 'border-box',
-        }}>
-          <h2 style={{ color: '#d4202f', marginTop: 0 }}>Render Error</h2>
-          <pre style={{ whiteSpace: 'pre-wrap', color: '#e9edf1', fontSize: 13 }}>
-            {error.message}
-            {'\n\n'}
-            {error.stack}
-          </pre>
-          <p style={{ color: '#44546a', fontSize: 13 }}>
-            Open DevTools (Ctrl+Shift+I) for more details, or close and reopen the app.
-          </p>
+    if (!error) return this.props.children;
+    return (
+      <div className="app app--crash" role="alert">
+        <div className="empty">
+          <h1 className="empty__title">Something went wrong</h1>
+          <p className="empty__text">The interface hit an unexpected error. Your saved sessions are safe.</p>
+          <pre className="crash__detail">{error.message}</pre>
+          <div className="row">
+            <button type="button" className="btn btn--primary" onClick={() => window.location.reload()}>
+              Reload GigaAgent
+            </button>
+            <button type="button" className="btn" onClick={() => window.api?.window.close()}>
+              Close
+            </button>
+          </div>
         </div>
-      );
-    }
-    return this.props.children;
+      </div>
+    );
   }
 }

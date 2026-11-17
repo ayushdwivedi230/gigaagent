@@ -1,0 +1,15 @@
+# Windows packaging. Requires: npm i -D electron-builder   (not installed yet — needs your approval, see TOOL_REGISTRY.md)
+appId: com.gigaagent.desktop
+productName: GigaAgent
+directories: { output: release }
+files: ["out/**/*", "package.json"]
+asar: true
+win:
+  target: [{ target: nsis, arch: [x64] }]
+  # Add an icon at build/icon.ico and code-signing (certificateFile / Azure Trusted Signing) before distribution.
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false   # user data (sessions.db, settings.json) is kept unless the user removes it
+  shortcutName: GigaAgent

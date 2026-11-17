@@ -25,7 +25,35 @@ export class SystemAudioCaptureService {
 
   private chunkCounter = 0;
 
+  private starting: Promise<void> | null = null;
+  private generation = 0;
+
+  /**
+   * Starts capture. Concurrent calls share one start; a stop() that lands while the OS prompt is
+   * still open tears the stream down as soon as it arrives, so no orphaned capture can survive.
+   */
   async start(callbacks: AudioCaptureCallbacks): Promise<void> {
+    if (this.isCapturing) return;
+    if (this.starting) return this.starting;
+    const gen = ++this.generation;
+    this.starting = this.startInternal(callbacks)
+      .then(() => {
+        if (gen !== this.generation) this.stopInternal();
+      })
+      .finally(() => {
+        this.starting = null;
+      });
+    return this.starting;
+  }
+
+  /** Mutes/unmutes the captured audio without closing the stream (used by Pause). */
+  setMuted(muted: boolean): void {
+    this.mediaStream?.getAudioTracks().forEach((track) => {
+      track.enabled = !muted;
+    });
+  }
+
+  private async startInternal(callbacks: AudioCaptureCallbacks): Promise<void> {
     if (this.isCapturing) return;
     this.chunkCounter = 0;
 
@@ -192,6 +220,11 @@ export class SystemAudioCaptureService {
   }
 
   stop(): void {
+    this.generation++;
+    this.stopInternal();
+  }
+
+  private stopInternal(): void {
     this.isCapturing = false;
 
     // Disarm gate if still active

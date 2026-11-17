@@ -1,15 +1,15 @@
 import path from 'node:path';
-import { app, safeStorage, session as electronSession } from 'electron';
+import { app, globalShortcut, safeStorage, session as electronSession, systemPreferences } from 'electron';
 import type { BrowserWindow } from 'electron';
 import { registerIpc } from './ipc';
-import { APP_NAME, createMainWindow } from './window';
+import { APP_ID, APP_NAME, applyWindowMode, createMainWindow, isAppUrl, setAlwaysOnTop } from './window';
 import { DemoTranscriptSource } from './services/demoTranscriptSource';
 import { MicrophoneTranscriptSource } from './services/microphoneTranscriptSource';
 import { SystemAudioTranscriptSource } from './services/systemAudioTranscriptSource';
 import { CompositeTranscriptSource } from './services/compositeTranscriptSource';
 import { SystemAudioGate } from './services/systemAudioGate';
 import { InMemorySessionRepository } from './services/sessionRepository';
-import type { SessionRepository } from './services/sessionRepository';
+import type { LibraryStore, SessionRepository } from './services/sessionRepository';
 import { SqliteSessionRepository } from './services/sqliteSessionRepository';
 import { SessionService } from './services/sessionService';
 import { SettingsService } from './services/settingsService';
@@ -19,9 +19,10 @@ import { ScreenContextManager } from './services/screenContextManager';
 import { DiagnosticsService } from './services/diagnosticsService';
 import { WindowInvisibilityService } from './services/windowInvisibilityService';
 import { initDiagnosticsLogger, logDiag } from './services/diagnosticsLogger';
-import type { SessionSnapshot } from '@shared/types';
+import type { Preferences, SessionSnapshot, ShortcutAction, WindowMode } from '@shared/types';
 
 let mainWindow: BrowserWindow | null = null;
+let library: LibraryStore;
 let settingsService: SettingsService;
 let repository: SessionRepository;
 let service: SessionService;
@@ -35,7 +36,7 @@ const screenCaptureService = new ScreenCaptureService();
 async function initServices(): Promise<void> {
   const userDataDir = app.getPath('userData');
   initDiagnosticsLogger(userDataDir);
-  diagnosticsService = new DiagnosticsService({ userDataDir });
+  diagnosticsService = new DiagnosticsService({ userDataDir, appVersion: app.getVersion() });
   logDiag('Lifecycle', 'Initializing services in main process', { userDataDir });
 
   process.on('uncaughtException', (err) => {
@@ -61,7 +62,10 @@ async function initServices(): Promise<void> {
   }
 
   const initialInvisibility = settingsService.getSettings().screenShareInvisibility ?? true;
-  windowInvisibilityService = new WindowInvisibilityService({ enabled: initialInvisibility });
+  windowInvisibilityService = new WindowInvisibilityService({
+    enabled: initialInvisibility,
+    onChange: (status) => service?.emitEvent({ type: 'ghost', status }),
+  });
 
   const dbPath = path.join(userDataDir, 'sessions.db');
   try {
@@ -73,6 +77,7 @@ async function initServices(): Promise<void> {
     diagnosticsService.setDatabaseHealth('in_memory');
     diagnosticsService.recordError('DATABASE', 'Failed to load SQLite file, running in-memory', String(err));
   }
+  library = repository as SessionRepository & LibraryStore;
 
   service = new SessionService({
     repository,
@@ -96,7 +101,28 @@ async function initServices(): Promise<void> {
     onSuggestion: (suggestion) => {
       service.emitEvent({ type: 'suggestion', suggestion });
     },
+    onDelta: (requestId, text, question) => {
+      service.emitEvent(question ? { type: 'answer-delta', requestId, text, question } : { type: 'answer-delta', requestId, text });
+    },
+    getProfileText: (id) => {
+      const item = library.getLibraryItem(id);
+      return item && item.kind === 'profile' ? `${item.title}\n${item.content}` : undefined;
+    },
+    getTranscriptText: (sessionId) => service.getTranscriptText(sessionId),
+    onUsage: (usage) => diagnosticsService?.setAiUsage(usage),
   });
+
+  diagnosticsService.setExtrasProvider(() => ({
+    ghost: windowInvisibilityService?.getStatus(),
+    credentialStorage: settingsService.getCredentialStorage(),
+    microphonePermission:
+      process.platform === 'win32' || process.platform === 'darwin' ? systemPreferences.getMediaAccessStatus('microphone') : 'unknown',
+    processes: app.getAppMetrics().map((m) => ({
+      type: m.type,
+      memoryMb: Math.round((m.memory?.workingSetSize ?? 0) / 1024),
+      cpuPercent: Math.round((m.cpu?.percentCPUUsage ?? 0) * 10) / 10,
+    })),
+  }));
 
   service.subscribe((event) => {
     if (event.type === 'status') {
@@ -125,6 +151,7 @@ function titleFor(snapshot: SessionSnapshot): string {
   const session = snapshot.activeSession;
   if (snapshot.status === 'idle' || !session) return APP_NAME;
   if (snapshot.status === 'active') {
+    if (snapshot.paused) return `❚❚ Paused — ${APP_NAME}`;
     let label = 'Demo session';
     if (session.source === 'microphone') label = 'Recording (Mic)';
     else if (session.source === 'system') label = 'Recording (System)';
@@ -148,8 +175,16 @@ function configurePermissions(win: BrowserWindow): void {
       return callback(false);
     }
 
-    // Permit media and display-capture for authenticated main window
-    if (permission === 'media' || (permission as string) === 'display-capture') {
+    // Microphone only (never camera), and display-capture only for the gated system-audio flow.
+    if (permission === 'media') {
+      const types = (details as unknown as { mediaTypes?: string[] }).mediaTypes ?? [];
+      return callback(!types.includes('video'));
+    }
+    if ((permission as string) === 'display-capture') {
+      return callback(true); // the display-media handler below enforces the armed gate
+    }
+    // Copying an answer to the clipboard is a core action.
+    if ((permission as string) === 'clipboard-sanitized-write') {
       return callback(true);
     }
 
@@ -168,7 +203,7 @@ function configurePermissions(win: BrowserWindow): void {
       return false;
     }
 
-    if ((permission as string) === 'display-capture' || permission === 'media') {
+    if ((permission as string) === 'display-capture' || permission === 'media' || (permission as string) === 'clipboard-sanitized-write') {
       return true;
     }
 
@@ -207,21 +242,90 @@ function configurePermissions(win: BrowserWindow): void {
   });
 }
 
+// ───────────────────────── Global shortcuts & window modes ─────────────────────────
+
+function showWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function sendShortcut(action: ShortcutAction): void {
+  showWindow();
+  service?.emitEvent({ type: 'shortcut', action });
+}
+
+/** (Re)registers the user's global shortcuts. Conflicts are reported, never fatal. */
+function registerShortcuts(prefs: Preferences): void {
+  globalShortcut.unregisterAll();
+  const bind = (accelerator: string, label: string, run: () => void): void => {
+    if (!accelerator) return;
+    try {
+      if (!globalShortcut.register(accelerator, run)) {
+        diagnosticsService?.recordError('LIFECYCLE', `The shortcut ${accelerator} (${label}) is already used by another app. Choose a different one in Settings → Shortcuts.`);
+      }
+    } catch (err) {
+      diagnosticsService?.recordError('LIFECYCLE', `The shortcut for "${label}" could not be registered.`, String(err));
+    }
+  };
+  bind(prefs.shortcuts.toggleWindow, 'Show / hide GigaAgent', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isVisible() && mainWindow.isFocused()) mainWindow.hide();
+    else showWindow();
+  });
+  bind(prefs.shortcuts.quickAsk, 'Quick ask', () => sendShortcut('quick-ask'));
+  bind(prefs.shortcuts.captureScreen, 'Capture screen context', () => sendShortcut('capture-screen'));
+}
+
+function currentMode(): WindowMode {
+  return settingsService.getPreferences().layout.expanded ? 'expanded' : 'compact';
+}
+
+/** Remembers where the user put the window, separately for compact and expanded modes. */
+function trackBounds(win: BrowserWindow): void {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const save = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      if (win.isDestroyed() || win.isMinimized() || win.isFullScreen()) return;
+      const key = currentMode() === 'expanded' ? 'expandedBounds' : 'compactBounds';
+      settingsService.saveSettings({ preferences: { layout: { [key]: win.getBounds() } } });
+    }, 500);
+  };
+  win.on('resized', save);
+  win.on('moved', save);
+  win.once('closed', () => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
+  app.setName(APP_NAME);
+  if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
+
+  app.on('second-instance', () => showWindow());
+
+  // Defence in depth: no web contents in this app may navigate away or open windows.
+  app.on('web-contents-created', (_event, contents) => {
+    contents.on('will-navigate', (event, url) => {
+      if (!isAppUrl(url)) event.preventDefault();
+    });
+    contents.on('will-attach-webview', (event) => event.preventDefault());
   });
 
   void app.whenReady().then(async () => {
     await initServices();
-    const win = createMainWindow();
+    const prefs = settingsService.getPreferences();
+    const win = createMainWindow({ layout: prefs.layout, contentProtection: windowInvisibilityService.isEnabled() });
     mainWindow = win;
     windowInvisibilityService.attach(win);
     configurePermissions(win);
+    trackBounds(win);
+    registerShortcuts(prefs);
     registerIpc(
       win,
       service,
@@ -232,6 +336,17 @@ if (!app.requestSingleInstanceLock()) {
       screenContextManager,
       diagnosticsService,
       windowInvisibilityService,
+      {
+        library,
+        getDatabasePath: () => (repository instanceof SqliteSessionRepository ? repository.getFilePath() : null),
+        flushDatabase: () => repository.flush?.(),
+        onSettingsChanged: (before) => {
+          const after = settingsService.getPreferences();
+          if (JSON.stringify(before.shortcuts) !== JSON.stringify(after.shortcuts)) registerShortcuts(after);
+        },
+        setWindowMode: (mode) => applyWindowMode(win, mode, settingsService.getPreferences().layout),
+        setAlwaysOnTop: (value) => setAlwaysOnTop(win, value && currentMode() === 'compact'),
+      },
     );
 
     win.webContents.on('render-process-gone', (_e, details) => {
@@ -241,9 +356,11 @@ if (!app.requestSingleInstanceLock()) {
       });
       diagnosticsService?.recordError('RENDERER', `Renderer process terminated: ${details.reason}`);
       systemAudioGate.disarm();
-      suggestionService?.destroy();
+      suggestionService?.cancel();
       void service?.stop();
       screenContextManager.clear();
+      // Recover the UI instead of leaving a dead window on screen.
+      if (details.reason !== 'clean-exit' && !win.isDestroyed()) win.webContents.reload();
     });
 
     win.on('closed', () => {
@@ -268,6 +385,7 @@ if (!app.requestSingleInstanceLock()) {
     isShuttingDown = true;
 
     logDiag('Lifecycle', 'Graceful shutdown initiated: releasing all resources...');
+    globalShortcut.unregisterAll();
     systemAudioGate.disarm();
     suggestionService?.destroy();
     windowInvisibilityService?.destroy();

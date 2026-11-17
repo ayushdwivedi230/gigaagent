@@ -1,0 +1,4 @@
+# Performance report
+**Measured here (sandbox, not your hardware):** renderer bundle 298 KB JS + 34 KB CSS minified (esbuild); 5,000-segment insert/load/search timings are printed by `npm test` (they run against a node:sqlite test shim, so treat them as logic checks, not sql.js numbers).
+**Changes with clear cause:** removed process spawn per window move; debounced DB writes during live sessions; clock tick 4 Hz → 1 Hz; level meters paint outside React; transcript rows use `content-visibility` and are capped at 2,000 in memory; streaming deltas throttled to ~16/s; bounded transcript buffers in main.
+**Not measured:** startup time, memory and CPU in real Electron, audio overhead. Settings → Diagnostics shows live per-process memory/CPU and AI latency so you can record real numbers. Suggested targets to validate: idle renderer < 150 MB, first answer token < 1.5 s on flash-lite, no dropped audio chunks over 60 min.

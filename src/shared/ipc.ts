@@ -1,5 +1,13 @@
 import type {
+  AskOptions,
   ClientSettings,
+  ExportSessionRequest,
+  LibraryItem,
+  LibraryQuery,
+  RunToolRequest,
+  SaveLibraryItemRequest,
+  TranscriptSearchHit,
+  WindowMode,
   DesktopSourceInfo,
   InvisibilityStatus,
   Result,
@@ -45,6 +53,19 @@ export const IPC = {
   windowClose: 'window:close',
   invisibilityGet: 'invisibility:get',
   invisibilitySet: 'invisibility:set',
+  aiCancel: 'ai:cancel',
+  aiRunTool: 'ai:run-tool',
+  libraryList: 'library:list',
+  librarySave: 'library:save',
+  libraryDelete: 'library:delete',
+  libraryClear: 'library:clear',
+  historySearch: 'history:search',
+  exportSession: 'export:session',
+  exportBackup: 'export:backup',
+  dataWipe: 'data:wipe',
+  windowSetMode: 'window:set-mode',
+  windowSetAlwaysOnTop: 'window:set-always-on-top',
+  sessionPause: 'session:pause',
 } as const;
 
 /** The only surface the renderer can use to reach the main process (exposed as window.api). */
@@ -53,12 +74,15 @@ export interface MeetingAssistantApi {
     start(request: StartSessionRequest): Promise<Result<SessionSnapshot>>;
     stop(): Promise<Result<SessionSummary>>;
     snapshot(): Promise<Result<SessionSnapshot>>;
+    /** Pauses/resumes automatic answers and transcript intake for the running session. */
+    setPaused(paused: boolean): Promise<Result<{ paused: boolean }>>;
   };
   history: {
     list(): Promise<Result<SessionSummary[]>>;
     get(id: string): Promise<Result<SessionDetail>>;
     delete(id: string): Promise<Result<{ deleted: number }>>;
     clear(): Promise<Result<{ deleted: number }>>;
+    search(query: string): Promise<Result<TranscriptSearchHit[]>>;
   };
   settings: {
     get(): Promise<Result<ClientSettings>>;
@@ -75,14 +99,25 @@ export interface MeetingAssistantApi {
     test(question?: string): Promise<Result<SuggestionItem>>;
   };
   ai: {
-    ask(
-      question: string,
-      options?: {
-        mode?: import('./types').SessionMode;
-        context?: string;
-        formatType?: string;
-      },
-    ): Promise<Result<SuggestionItem>>;
+    ask(question: string, options?: AskOptions): Promise<Result<SuggestionItem>>;
+    /** Cancels an in-flight answer. Without an id, cancels everything in flight. */
+    cancel(requestId?: string): Promise<Result<{ cancelled: number }>>;
+    /** Runs a mode tool (summary, flashcards, answer evaluation…) over text or the session transcript. */
+    runTool(request: RunToolRequest): Promise<Result<SuggestionItem>>;
+  };
+  library: {
+    list(query?: LibraryQuery): Promise<Result<LibraryItem[]>>;
+    save(item: SaveLibraryItemRequest): Promise<Result<LibraryItem>>;
+    delete(id: string): Promise<Result<{ deleted: number }>>;
+    clear(): Promise<Result<{ deleted: number }>>;
+  };
+  data: {
+    /** Asks where to save, then writes the export. `saved: false` means the user cancelled. */
+    exportSession(request: ExportSessionRequest): Promise<Result<{ saved: boolean; path?: string }>>;
+    /** Copies the local database to a user-chosen file. */
+    backup(): Promise<Result<{ saved: boolean; path?: string }>>;
+    /** Deletes every session, saved item and screenshot context. API keys and preferences are kept. */
+    wipe(): Promise<Result<{ sessions: number; libraryItems: number }>>;
   };
   screen: {
     getSources(): Promise<Result<DesktopSourceInfo[]>>;
@@ -91,7 +126,7 @@ export interface MeetingAssistantApi {
     discard(screenshotId?: string): Promise<Result<{ discarded: boolean }>>;
     clearContext(): Promise<Result<{ cleared: boolean }>>;
     getContext(): Promise<Result<ScreenshotData | null>>;
-    analyze(request: ScreenAnalysisRequest): Promise<Result<SuggestionItem>>;
+    analyze(request: ScreenAnalysisRequest & { requestId?: string }): Promise<Result<SuggestionItem>>;
   };
   diagnostics: {
     get(): Promise<Result<import('./errorTypes').DiagnosticsSnapshot>>;
@@ -104,6 +139,8 @@ export interface MeetingAssistantApi {
   window: {
     minimize(): void;
     close(): void;
+    setMode(mode: WindowMode): Promise<Result<{ mode: WindowMode }>>;
+    setAlwaysOnTop(value: boolean): Promise<Result<{ alwaysOnTop: boolean }>>;
   };
   /** Screen-share invisibility & window capture exclusion controls. */
   invisibility: {

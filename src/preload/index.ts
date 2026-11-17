@@ -10,12 +10,14 @@ const api: MeetingAssistantApi = {
     start: (request) => ipcRenderer.invoke(IPC.sessionStart, request),
     stop: () => ipcRenderer.invoke(IPC.sessionStop),
     snapshot: () => ipcRenderer.invoke(IPC.sessionSnapshot),
+    setPaused: (paused) => ipcRenderer.invoke(IPC.sessionPause, paused),
   },
   history: {
     list: () => ipcRenderer.invoke(IPC.historyList),
     get: (id) => ipcRenderer.invoke(IPC.historyGet, id),
     delete: (id) => ipcRenderer.invoke(IPC.historyDelete, id),
     clear: () => ipcRenderer.invoke(IPC.historyClear),
+    search: (query) => ipcRenderer.invoke(IPC.historySearch, query),
   },
   settings: {
     get: () => ipcRenderer.invoke(IPC.settingsGet),
@@ -35,6 +37,19 @@ const api: MeetingAssistantApi = {
   },
   ai: {
     ask: (question, options) => ipcRenderer.invoke(IPC.aiAsk, { question, options }),
+    cancel: (requestId) => ipcRenderer.invoke(IPC.aiCancel, requestId),
+    runTool: (request) => ipcRenderer.invoke(IPC.aiRunTool, request),
+  },
+  library: {
+    list: (query) => ipcRenderer.invoke(IPC.libraryList, query),
+    save: (item) => ipcRenderer.invoke(IPC.librarySave, item),
+    delete: (id) => ipcRenderer.invoke(IPC.libraryDelete, id),
+    clear: () => ipcRenderer.invoke(IPC.libraryClear),
+  },
+  data: {
+    exportSession: (request) => ipcRenderer.invoke(IPC.exportSession, request),
+    backup: () => ipcRenderer.invoke(IPC.exportBackup),
+    wipe: () => ipcRenderer.invoke(IPC.dataWipe),
   },
   screen: {
     getSources: () => ipcRenderer.invoke(IPC.screenGetSources),
@@ -57,6 +72,8 @@ const api: MeetingAssistantApi = {
   window: {
     minimize: () => { void ipcRenderer.invoke(IPC.windowMinimize); },
     close: () => { void ipcRenderer.invoke(IPC.windowClose); },
+    setMode: (mode) => ipcRenderer.invoke(IPC.windowSetMode, mode),
+    setAlwaysOnTop: (value) => ipcRenderer.invoke(IPC.windowSetAlwaysOnTop, value),
   },
   invisibility: {
     getStatus: () => ipcRenderer.invoke(IPC.invisibilityGet),

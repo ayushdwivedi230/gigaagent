@@ -1,4 +1,4 @@
-import type { SessionMode, SuggestionItem } from '@shared/types';
+import type { AnswerAction, AnswerFormat, SessionMode } from '@shared/types';
 
 export const TECHNICAL_INTENTS = [
   'CODE_GENERATION',
@@ -120,10 +120,21 @@ export interface QualityValidationResult {
 
 export interface OrchestrationRequest {
   text: string;
-  speaker?: 'user' | 'system';
-  mode?: SessionMode;
-  context?: string;
-  isManual?: boolean;
-  sessionId?: string;
-  screenshotBase64?: string;
+  speaker?: 'user' | 'system' | undefined;
+  mode?: SessionMode | undefined;
+  context?: string | undefined;
+  isManual?: boolean | undefined;
+  sessionId?: string | undefined;
+  screenshotBase64?: string | undefined;
+  answerFormat?: AnswerFormat | undefined;
+  speakingTargetSec?: number | undefined;
+  action?: AnswerAction | undefined;
+  previousAnswer?: string | undefined;
+  customInstructions?: string | undefined;
+  preparationProfile?: string | undefined;
+  /** Caller-supplied id used for streaming deltas and cancellation. */
+  requestId?: string | undefined;
+  /** Receives the answer body so far (title line stripped) while streaming. */
+  onDelta?: ((content: string) => void) | undefined;
+  preferredModel?: string | undefined;
 }

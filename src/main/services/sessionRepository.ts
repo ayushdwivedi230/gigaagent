@@ -1,5 +1,24 @@
 import { applySegment } from '@shared/transcript';
-import type { SessionDetail, SessionSummary, SuggestionItem, TranscriptSegment } from '@shared/types';
+import type {
+  LibraryItem,
+  LibraryQuery,
+  SaveLibraryItemRequest,
+  SessionDetail,
+  SessionSummary,
+  SuggestionItem,
+  TranscriptSearchHit,
+  TranscriptSegment,
+} from '@shared/types';
+
+/** Saved answers, quick-capture notes, prompt templates and preparation profiles. */
+export interface LibraryStore {
+  listLibrary(query?: LibraryQuery): LibraryItem[];
+  getLibraryItem(id: string): LibraryItem | undefined;
+  saveLibraryItem(request: SaveLibraryItemRequest, now?: string): LibraryItem;
+  deleteLibraryItem(id: string): boolean;
+  clearLibrary(): number;
+  searchTranscripts(query: string, limit?: number): TranscriptSearchHit[];
+}
 
 /** Storage boundary. Swapped for SQLite in Milestone 3. */
 export interface SessionRepository {
@@ -18,8 +37,9 @@ export interface SessionRepository {
   getHealth?(): 'healthy' | 'recovered' | 'corrupted' | 'in_memory';
 }
 
-export class InMemorySessionRepository implements SessionRepository {
+export class InMemorySessionRepository implements SessionRepository, LibraryStore {
   private readonly sessions = new Map<string, SessionDetail>();
+  private readonly library = new Map<string, LibraryItem>();
 
   create(summary: SessionSummary): void {
     this.sessions.set(summary.id, { summary: { ...summary }, segments: [], suggestions: [] });
@@ -74,5 +94,70 @@ export class InMemorySessionRepository implements SessionRepository {
     const count = this.sessions.size;
     this.sessions.clear();
     return count;
+  }
+
+  listLibrary(query: LibraryQuery = {}): LibraryItem[] {
+    const needle = query.search?.toLowerCase();
+    return [...this.library.values()]
+      .filter((i) => !query.kind || i.kind === query.kind)
+      .filter((i) => !query.sessionId || i.sessionId === query.sessionId)
+      .filter((i) => !needle || [i.title, i.content, i.question ?? '', i.tags.join(' ')].some((t) => t.toLowerCase().includes(needle)))
+      .reverse()
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map((i) => ({ ...i, tags: [...i.tags] }));
+  }
+
+  getLibraryItem(id: string): LibraryItem | undefined {
+    const item = this.library.get(id);
+    return item ? { ...item, tags: [...item.tags] } : undefined;
+  }
+
+  saveLibraryItem(request: SaveLibraryItemRequest, now: string = new Date().toISOString()): LibraryItem {
+    const existing = request.id ? this.library.get(request.id) : undefined;
+    const item: LibraryItem = {
+      id: existing?.id ?? request.id ?? globalThis.crypto.randomUUID(),
+      kind: request.kind,
+      title: request.title,
+      content: request.content,
+      tags: request.tags ?? existing?.tags ?? [],
+      sessionId: request.sessionId !== undefined ? request.sessionId : (existing?.sessionId ?? null),
+      question: request.question !== undefined ? request.question : (existing?.question ?? null),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.library.set(item.id, item);
+    return { ...item, tags: [...item.tags] };
+  }
+
+  deleteLibraryItem(id: string): boolean {
+    return this.library.delete(id);
+  }
+
+  clearLibrary(): number {
+    const count = this.library.size;
+    this.library.clear();
+    return count;
+  }
+
+  searchTranscripts(query: string, limit = 100): TranscriptSearchHit[] {
+    const needle = query.toLowerCase();
+    const hits: TranscriptSearchHit[] = [];
+    for (const summary of this.list()) {
+      for (const seg of this.sessions.get(summary.id)?.segments ?? []) {
+        if (hits.length >= limit) return hits;
+        if (seg.isFinal && seg.text.toLowerCase().includes(needle)) {
+          hits.push({
+            sessionId: summary.id,
+            sessionTitle: summary.title,
+            startedAt: summary.startedAt,
+            segmentId: seg.id,
+            speaker: seg.speaker,
+            startMs: seg.startMs,
+            text: seg.text,
+          });
+        }
+      }
+    }
+    return hits;
   }
 }

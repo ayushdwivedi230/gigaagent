@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { ClassifiedError, DiagnosticsSnapshot, ErrorCategory } from '@shared/errorTypes';
+import type { AiUsage, ClassifiedError, DiagnosticsExtras, DiagnosticsSnapshot, ErrorCategory } from '@shared/errorTypes';
 import { logDiag } from './diagnosticsLogger';
 
 export interface DiagnosticsServiceOptions {
@@ -21,6 +21,9 @@ export class DiagnosticsService {
   private aiProviderStatus: 'configured' | 'missing_key' | 'error' = 'missing_key';
   private databaseHealth: 'healthy' | 'corrupted' | 'recovered' | 'in_memory' = 'healthy';
   private lastError?: ClassifiedError;
+  private recentErrors: ClassifiedError[] = [];
+  private aiUsage: AiUsage | undefined;
+  private extrasProvider: (() => DiagnosticsExtras) | undefined;
 
   constructor(options: DiagnosticsServiceOptions) {
     this.userDataDir = options.userDataDir;
@@ -44,6 +47,15 @@ export class DiagnosticsService {
     this.databaseHealth = health;
   }
 
+  setAiUsage(usage: AiUsage): void {
+    this.aiUsage = usage;
+  }
+
+  /** Supplies live values (Ghost Mode, permissions, per-process memory) when a snapshot is taken. */
+  setExtrasProvider(provider: () => DiagnosticsExtras): void {
+    this.extrasProvider = provider;
+  }
+
   recordError(category: ErrorCategory, userMessage: string, technicalDetails?: string): ClassifiedError {
     const scrubbedDetails = technicalDetails
       ? technicalDetails
@@ -59,12 +71,24 @@ export class DiagnosticsService {
     };
 
     this.lastError = classified;
+    this.recentErrors = [...this.recentErrors.slice(-9), classified];
     logDiag(`Error:${category}`, userMessage, { technicalDetails: scrubbedDetails });
     return classified;
   }
 
   getSnapshot(): DiagnosticsSnapshot {
+    let extras: DiagnosticsExtras = {};
+    try {
+      extras = this.extrasProvider?.() ?? {};
+    } catch {
+      extras = {};
+    }
+    const mem = process.memoryUsage();
     return {
+      ...extras,
+      recentErrors: [...this.recentErrors],
+      ai: this.aiUsage,
+      memory: { rssMb: Math.round(mem.rss / 1048576), heapUsedMb: Math.round(mem.heapUsed / 1048576) },
       appVersion: this.appVersion,
       electronVersion: this.electronVersion,
       nodeVersion: process.version,
