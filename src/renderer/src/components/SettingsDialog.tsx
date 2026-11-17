@@ -345,6 +345,13 @@ export function SettingsDialog(p: SettingsDialogProps) {
               label="Stealth Cursor"
             />
           </Row>
+          <Row label="Decoy Cursor (Frozen on Screen Share)" hint="Leaves a frozen decoy cursor on the background app at the entry point so spectators see a naturally resting cursor while you navigate GigaAgent.">
+            <Toggle
+              checked={prefs.appearance.decoyCursor ?? true}
+              onChange={(v) => p.onPrefs({ appearance: { decoyCursor: v } })}
+              label="Decoy Cursor"
+            />
+          </Row>
           <Row label="Click-Through Mode" hint="Passes through clicks on non-interactive areas directly to background applications.">
             <Toggle
               checked={prefs.layout.clickThrough ?? false}

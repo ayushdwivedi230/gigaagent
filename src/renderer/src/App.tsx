@@ -441,7 +441,10 @@ export default function App() {
         {a.announcement}
       </div>
 
-      <StealthCursor enabled={prefs.appearance.stealthCursor ?? true} />
+      <StealthCursor
+        enabled={prefs.appearance.stealthCursor ?? true}
+        decoyEnabled={prefs.appearance.decoyCursor ?? true}
+      />
 
       <SettingsDialog
         open={settingsOpen}

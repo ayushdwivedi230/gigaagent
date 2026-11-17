@@ -76,6 +76,8 @@ const api: MeetingAssistantApi = {
     setAlwaysOnTop: (value) => ipcRenderer.invoke(IPC.windowSetAlwaysOnTop, value),
     setIgnoreMouseEvents: (ignore, options) =>
       ipcRenderer.invoke(IPC.windowSetIgnoreMouseEvents, { ignore, forward: options?.forward ?? true }),
+    showDecoyCursor: (point) => ipcRenderer.invoke(IPC.decoyCursorShow, point),
+    hideDecoyCursor: () => ipcRenderer.invoke(IPC.decoyCursorHide),
   },
   invisibility: {
     getStatus: () => ipcRenderer.invoke(IPC.invisibilityGet),

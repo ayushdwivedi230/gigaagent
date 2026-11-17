@@ -1,11 +1,14 @@
 import { useEffect, useRef } from 'react';
 
+const winApi = (window as { api?: typeof window.api }).api ?? null;
+
 interface StealthCursorProps {
   enabled?: boolean;
+  decoyEnabled?: boolean;
 }
 
 /**
- * Stealth Cursor: Private In-Window Hardware Cursor Replacement
+ * Stealth Cursor: Private In-Window Hardware Cursor Replacement + Decoy Cursor
  *
  * Problem it solves:
  * When a window is excluded from screen share using WDA_EXCLUDEFROMCAPTURE / NSWindowSharingNone,
@@ -14,11 +17,14 @@ interface StealthCursorProps {
  *
  * Solution:
  * 1. Applies `cursor: none !important;` to the overlay window, prompting Windows to hide the OS hardware cursor.
- * 2. Renders this private custom cursor inside GigaAgent's DOM at the exact (clientX, clientY) coordinates.
- * 3. Because GigaAgent has WDA_EXCLUDEFROMCAPTURE, GigaAgent AND this custom cursor are 100% invisible to Google Meet/Zoom/Teams.
- * 4. Spectators see ZERO cursor movement over this area, while the user sees and controls their cursor with 0ms latency.
+ * 2. When entering GigaAgent, triggers a frozen decoy cursor on the screen share stream at the exact entry point.
+ * 3. Renders this private custom cursor inside GigaAgent's DOM at the exact (clientX, clientY) coordinates.
+ * 4. Because GigaAgent has WDA_EXCLUDEFROMCAPTURE, GigaAgent AND this custom cursor are 100% invisible to Google Meet/Zoom/Teams.
+ * 5. Spectators see the cursor resting completely frozen at the entry point on the background app, while the user
+ *    sees and controls their cursor with 0ms latency.
+ * 6. When exiting, the decoy cursor disappears seamlessly and the OS cursor restores.
  */
-export function StealthCursor({ enabled = true }: StealthCursorProps) {
+export function StealthCursor({ enabled = true, decoyEnabled = true }: StealthCursorProps) {
   const cursorRef = useRef<HTMLDivElement>(null);
   const arrowRef = useRef<SVGSVGElement>(null);
   const pointerRef = useRef<SVGSVGElement>(null);
@@ -27,6 +33,7 @@ export function StealthCursor({ enabled = true }: StealthCursorProps) {
   useEffect(() => {
     if (!enabled) {
       document.documentElement.classList.remove('stealth-cursor-active');
+      void winApi?.window?.hideDecoyCursor?.();
       return;
     }
 
@@ -42,6 +49,9 @@ export function StealthCursor({ enabled = true }: StealthCursorProps) {
       if (!isVisible) {
         isVisible = true;
         cursor.style.opacity = '1';
+        if (decoyEnabled && winApi?.window?.showDecoyCursor) {
+          void winApi.window.showDecoyCursor({ x: e.screenX, y: e.screenY });
+        }
       }
       cursor.style.transform = `translate3d(${e.clientX}px, ${e.clientY}px, 0)`;
 
@@ -72,6 +82,9 @@ export function StealthCursor({ enabled = true }: StealthCursorProps) {
       if (!e.relatedTarget && cursor) {
         isVisible = false;
         cursor.style.opacity = '0';
+        if (winApi?.window?.hideDecoyCursor) {
+          void winApi.window.hideDecoyCursor();
+        }
       }
     };
 
@@ -82,8 +95,9 @@ export function StealthCursor({ enabled = true }: StealthCursorProps) {
       document.documentElement.classList.remove('stealth-cursor-active');
       window.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseleave', onMouseLeave);
+      void winApi?.window?.hideDecoyCursor?.();
     };
-  }, [enabled]);
+  }, [enabled, decoyEnabled]);
 
   if (!enabled) return null;
 

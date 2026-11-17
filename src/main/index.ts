@@ -18,6 +18,7 @@ import { ScreenCaptureService } from './services/screenCaptureService';
 import { ScreenContextManager } from './services/screenContextManager';
 import { DiagnosticsService } from './services/diagnosticsService';
 import { WindowInvisibilityService } from './services/windowInvisibilityService';
+import { DecoyCursorService } from './services/decoyCursorService';
 import { initDiagnosticsLogger, logDiag } from './services/diagnosticsLogger';
 import type { Preferences, SessionSnapshot, ShortcutAction, WindowMode } from '@shared/types';
 
@@ -29,6 +30,7 @@ let service: SessionService;
 let suggestionService: SuggestionService;
 let diagnosticsService: DiagnosticsService;
 let windowInvisibilityService: WindowInvisibilityService;
+let decoyCursorService: DecoyCursorService;
 const systemAudioGate = new SystemAudioGate();
 const screenContextManager = new ScreenContextManager();
 const screenCaptureService = new ScreenCaptureService();
@@ -320,6 +322,8 @@ if (!app.requestSingleInstanceLock()) {
   void app.whenReady().then(async () => {
     await initServices();
     const prefs = settingsService.getPreferences();
+    decoyCursorService = new DecoyCursorService({ enabled: prefs.appearance.decoyCursor ?? true });
+    decoyCursorService.init();
     const win = createMainWindow({ layout: prefs.layout, contentProtection: windowInvisibilityService.isEnabled() });
     mainWindow = win;
     windowInvisibilityService.attach(win);
@@ -338,13 +342,20 @@ if (!app.requestSingleInstanceLock()) {
       windowInvisibilityService,
       {
         library,
+        decoyCursorService,
         getDatabasePath: () => (repository instanceof SqliteSessionRepository ? repository.getFilePath() : null),
         flushDatabase: () => repository.flush?.(),
         onSettingsChanged: (before) => {
           const after = settingsService.getPreferences();
           if (JSON.stringify(before.shortcuts) !== JSON.stringify(after.shortcuts)) registerShortcuts(after);
+          if (before.appearance.decoyCursor !== after.appearance.decoyCursor) {
+            decoyCursorService?.setEnabled(after.appearance.decoyCursor ?? true);
+          }
         },
-        setWindowMode: (mode) => applyWindowMode(win, mode, settingsService.getPreferences().layout),
+        setWindowMode: (mode) => {
+          decoyCursorService?.hide();
+          applyWindowMode(win, mode, settingsService.getPreferences().layout);
+        },
         setAlwaysOnTop: (value) => setAlwaysOnTop(win, value && currentMode() === 'compact'),
       },
     );
@@ -389,6 +400,7 @@ if (!app.requestSingleInstanceLock()) {
     systemAudioGate.disarm();
     suggestionService?.destroy();
     windowInvisibilityService?.destroy();
+    decoyCursorService?.destroy();
     screenContextManager.clear();
 
     void Promise.resolve(service?.stop())

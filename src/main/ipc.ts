@@ -26,6 +26,7 @@ import type { ScreenCaptureService } from './services/screenCaptureService';
 import type { ScreenContextManager } from './services/screenContextManager';
 import type { DiagnosticsService } from './services/diagnosticsService';
 import type { WindowInvisibilityService } from './services/windowInvisibilityService';
+import type { DecoyCursorService } from './services/decoyCursorService';
 import type { LibraryStore } from './services/sessionRepository';
 import { logDiag } from './services/diagnosticsLogger';
 
@@ -38,6 +39,7 @@ export interface IpcExtras {
   onSettingsChanged?: (before: ReturnType<SettingsService['getPreferences']>) => void;
   setWindowMode?: (mode: WindowMode) => void;
   setAlwaysOnTop?: (value: boolean) => void;
+  decoyCursorService?: DecoyCursorService;
   /** Injected for tests. */
   dialogs?: Pick<typeof dialog, 'showSaveDialog'>;
 }
@@ -393,6 +395,17 @@ export function registerIpc(
       }
     }
     return ok({ ignore, forward: forward ?? true });
+  });
+  handle(IPC.decoyCursorShow, (raw) => {
+    if (typeof raw !== 'object' || raw === null) return err('INVALID_REQUEST', 'Expected object with coordinates.');
+    const { x, y } = raw as { x: number; y: number };
+    if (typeof x !== 'number' || typeof y !== 'number') return err('INVALID_REQUEST', 'Expected x and y numbers.');
+    extras.decoyCursorService?.showAt(x, y);
+    return ok({ shown: true });
+  });
+  handle(IPC.decoyCursorHide, () => {
+    extras.decoyCursorService?.hide();
+    return ok({ hidden: true });
   });
 
   return () => {

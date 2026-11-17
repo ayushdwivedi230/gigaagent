@@ -66,6 +66,8 @@ export const IPC = {
   windowSetMode: 'window:set-mode',
   windowSetAlwaysOnTop: 'window:set-always-on-top',
   windowSetIgnoreMouseEvents: 'window:set-ignore-mouse-events',
+  decoyCursorShow: 'decoy-cursor:show',
+  decoyCursorHide: 'decoy-cursor:hide',
   sessionPause: 'session:pause',
 } as const;
 
@@ -143,6 +145,8 @@ export interface MeetingAssistantApi {
     setMode(mode: WindowMode): Promise<Result<{ mode: WindowMode }>>;
     setAlwaysOnTop(value: boolean): Promise<Result<{ alwaysOnTop: boolean }>>;
     setIgnoreMouseEvents(ignore: boolean, options?: { forward?: boolean }): Promise<Result<{ ignore: boolean; forward?: boolean }>>;
+    showDecoyCursor(point: { x: number; y: number }): Promise<Result<{ shown: boolean }>>;
+    hideDecoyCursor(): Promise<Result<{ hidden: boolean }>>;
   };
   /** Screen-share invisibility & window capture exclusion controls. */
   invisibility: {

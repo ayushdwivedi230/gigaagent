@@ -166,6 +166,8 @@ export interface AppearanceSettings {
   reducedMotion: 'system' | 'on' | 'off';
   /** Suppresses OS hardware cursor over the overlay and renders an in-app private cursor to hide movement on screen shares. */
   stealthCursor?: boolean;
+  /** Displays a frozen decoy cursor on the screen share at the entry point while moving locally over GigaAgent. */
+  decoyCursor?: boolean;
 }
 
 export interface AiSettings {

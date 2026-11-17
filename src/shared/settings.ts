@@ -3,7 +3,7 @@ import type { Preferences, WindowBounds } from './types';
 
 /** Pure defaults + validation for user preferences. No Node/Electron/DOM imports. */
 export const DEFAULT_PREFERENCES: Preferences = {
-  appearance: { theme: 'dark', accent: 'violet', textScale: 1, reducedMotion: 'system', stealthCursor: true },
+  appearance: { theme: 'dark', accent: 'violet', textScale: 1, reducedMotion: 'system', stealthCursor: true, decoyCursor: true },
   ai: {
     answerFormat: 'natural',
     speakingTargetSec: 0,
@@ -102,6 +102,7 @@ export function sanitizePreferences(input: unknown, base: Preferences = DEFAULT_
       textScale: Math.round(num(a.textScale, TEXT_SCALE_MIN, TEXT_SCALE_MAX, base.appearance.textScale) * 100) / 100,
       reducedMotion: oneOf(a.reducedMotion, ['system', 'on', 'off'] as const, base.appearance.reducedMotion),
       stealthCursor: bool(a.stealthCursor, base.appearance.stealthCursor ?? true),
+      decoyCursor: bool(a.decoyCursor, base.appearance.decoyCursor ?? true),
     },
     ai: {
       answerFormat: oneOf(ai.answerFormat, ANSWER_FORMATS, base.ai.answerFormat),
