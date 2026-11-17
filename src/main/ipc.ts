@@ -381,6 +381,19 @@ export function registerIpc(
     extras.setAlwaysOnTop?.(raw);
     return ok({ alwaysOnTop: raw });
   });
+  handle(IPC.windowSetIgnoreMouseEvents, (raw) => {
+    if (typeof raw !== 'object' || raw === null) return err('INVALID_REQUEST', 'Expected object.');
+    const { ignore, forward } = raw as { ignore: boolean; forward?: boolean };
+    if (typeof ignore !== 'boolean') return err('INVALID_REQUEST', 'Expected ignore boolean.');
+    if (!win.isDestroyed()) {
+      try {
+        win.setIgnoreMouseEvents(ignore, { forward: forward ?? true });
+      } catch (cause) {
+        return err('INTERNAL', 'Failed to update window mouse events: ' + String(cause));
+      }
+    }
+    return ok({ ignore, forward: forward ?? true });
+  });
 
   return () => {
     unsubscribe();

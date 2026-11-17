@@ -93,6 +93,20 @@ test('4. Lifecycle & Reassertion: Content protection is called on attach and rea
   assert.equal(calls.length, 4);
   assert.equal(calls[3], true);
 
+  // Simulate blur event (switching to Zoom/Meet)
+  mockWin.emit('blur');
+  assert.equal(calls.length, 5);
+  assert.equal(calls[4], true);
+
+  // Simulate resize / resized events
+  mockWin.emit('resize');
+  assert.equal(calls.length, 6);
+  assert.equal(calls[5], true);
+
+  mockWin.emit('resized');
+  assert.equal(calls.length, 7);
+  assert.equal(calls[6], true);
+
   // Toggle off
   service.setEnabled(false);
   assert.equal(service.isEnabled(), false);

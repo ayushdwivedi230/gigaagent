@@ -338,6 +338,13 @@ export function SettingsDialog(p: SettingsDialogProps) {
             <span className={`chip chip--${ghostState === 'active' ? 'ok' : ghostState === 'error' ? 'warn' : 'quiet'}`}>{ghostState === 'active' ? 'On' : ghostState === 'off' ? 'Off' : ghostState === 'applying' ? 'Applying…' : ghostState === 'unsupported' ? 'Unavailable' : 'Error'}</span>
             <Toggle checked={ghostState === 'active'} disabled={!ghost || ghost.supported === false || ghostState === 'applying'} onChange={p.onGhost} label="Ghost Mode" />
           </Row>
+          <Row label="Mouse Cursor Passthrough" hint="Passes through mouse interaction and hardware cursor rendering on non-interactive areas to underlying applications.">
+            <Toggle
+              checked={prefs.layout.clickThrough ?? true}
+              onChange={(v) => p.onPrefs({ layout: { clickThrough: v } })}
+              label="Mouse Cursor Passthrough"
+            />
+          </Row>
           {ghost?.error && (
             <p className="callout callout--warn" role="alert">
               <Icon name="alert" size={14} />

@@ -65,6 +65,7 @@ export const IPC = {
   dataWipe: 'data:wipe',
   windowSetMode: 'window:set-mode',
   windowSetAlwaysOnTop: 'window:set-always-on-top',
+  windowSetIgnoreMouseEvents: 'window:set-ignore-mouse-events',
   sessionPause: 'session:pause',
 } as const;
 
@@ -141,6 +142,7 @@ export interface MeetingAssistantApi {
     close(): void;
     setMode(mode: WindowMode): Promise<Result<{ mode: WindowMode }>>;
     setAlwaysOnTop(value: boolean): Promise<Result<{ alwaysOnTop: boolean }>>;
+    setIgnoreMouseEvents(ignore: boolean, options?: { forward?: boolean }): Promise<Result<{ ignore: boolean; forward?: boolean }>>;
   };
   /** Screen-share invisibility & window capture exclusion controls. */
   invisibility: {

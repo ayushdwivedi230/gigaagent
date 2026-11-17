@@ -28,6 +28,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
     alwaysOnTop: true,
     compactBounds: null,
     expandedBounds: null,
+    clickThrough: true,
   },
   audio: { micDeviceId: null, defaultSource: 'both', defaultMode: 'mock-interview' },
 };
@@ -130,6 +131,7 @@ export function sanitizePreferences(input: unknown, base: Preferences = DEFAULT_
       alwaysOnTop: bool(l.alwaysOnTop, base.layout.alwaysOnTop),
       compactBounds: 'compactBounds' in l ? bounds(l.compactBounds, base.layout.compactBounds) : base.layout.compactBounds,
       expandedBounds: 'expandedBounds' in l ? bounds(l.expandedBounds, base.layout.expandedBounds) : base.layout.expandedBounds,
+      clickThrough: bool(l.clickThrough, base.layout.clickThrough ?? true),
     },
     audio: {
       micDeviceId: mic === null ? null : typeof mic === 'string' && mic.length <= 256 ? mic : base.audio.micDeviceId,

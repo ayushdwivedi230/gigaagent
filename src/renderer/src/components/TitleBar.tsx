@@ -37,7 +37,7 @@ export const TitleBar = memo(function TitleBar({ ghost, onToggleGhost, windowMod
               ? (ghost?.detail ?? 'Ghost Mode is unavailable.')
               : state === 'error'
                 ? `Ghost Mode failed: ${ghost?.error ?? 'unknown error'}. Click to retry.`
-                : 'Ghost Mode — leaves this window out of screen captures made on this computer (Ctrl+Shift+H)'
+                : 'Ghost Mode & Cursor Passthrough — leaves this window out of screen captures and passes through cursor interaction to background windows (Ctrl+Shift+H)'
           }
         >
           <Icon name="ghost" size={14} filled={state === 'active'} />

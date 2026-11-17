@@ -16,6 +16,7 @@ import type { SettingsSection } from './components/SettingsDialog';
 import { Splitter } from './components/Splitter';
 import { TitleBar } from './components/TitleBar';
 import { TranscriptPanel } from './components/TranscriptPanel';
+import { useMousePassthrough } from './state/useMousePassthrough';
 
 const winApi = (window as { api?: typeof window.api }).api ?? null;
 
@@ -69,6 +70,13 @@ export default function App() {
   const [leftWidth, setLeftWidth] = useState(prefs.layout.leftWidth);
   const [rightWidth, setRightWidth] = useState(prefs.layout.rightWidth);
   const askRef = useRef<HTMLTextAreaElement>(null);
+
+  // ── Smart Click-Through & Cursor Passthrough ─────────────────────────────
+  useMousePassthrough({
+    enabled: prefs.layout.clickThrough ?? true,
+    windowMode: a.windowMode,
+    modalOpen: settingsOpen,
+  });
 
   useEffect(() => setLeftWidth(prefs.layout.leftWidth), [prefs.layout.leftWidth]);
   useEffect(() => setRightWidth(prefs.layout.rightWidth), [prefs.layout.rightWidth]);

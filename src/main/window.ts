@@ -104,6 +104,13 @@ export function applyWindowMode(win: BrowserWindow, mode: WindowMode, layout: La
   win.setBounds(resolveBounds(mode, layout), false);
   win.setMinimumSize(limits.minWidth, limits.minHeight);
   setAlwaysOnTop(win, mode === 'compact' && layout.alwaysOnTop);
+  try {
+    if (mode === 'compact' && layout.clickThrough !== false) {
+      win.setIgnoreMouseEvents(true, { forward: true });
+    } else {
+      win.setIgnoreMouseEvents(false);
+    }
+  } catch {}
 }
 
 export function setAlwaysOnTop(win: BrowserWindow, value: boolean): void {
@@ -154,6 +161,11 @@ export function createMainWindow(options: CreateWindowOptions): BrowserWindow {
   // Ghost Mode follows the user's saved choice from the very first frame.
   win.setContentProtection(options.contentProtection);
   setAlwaysOnTop(win, mode === 'compact' && options.layout.alwaysOnTop);
+  try {
+    if (mode === 'compact' && options.layout.clickThrough !== false) {
+      win.setIgnoreMouseEvents(true, { forward: true });
+    }
+  } catch {}
 
   win.once('ready-to-show', () => {
     win.show();

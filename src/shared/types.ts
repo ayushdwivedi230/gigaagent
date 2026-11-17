@@ -208,6 +208,7 @@ export interface LayoutSettings {
   alwaysOnTop: boolean;
   compactBounds: WindowBounds | null;
   expandedBounds: WindowBounds | null;
+  clickThrough?: boolean;
 }
 
 export interface AudioSettings {

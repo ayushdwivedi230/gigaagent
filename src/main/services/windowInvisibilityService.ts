@@ -118,20 +118,27 @@ export class WindowInvisibilityService {
     // 2. restore: Window un-minimized by user or system
     addListener(win, 'restore', () => this.reassert('restore'));
 
-    // 3. focus: Window gains user focus
+    // 3. focus & blur: Window gains or loses user focus (e.g. switching across workspaces or to Zoom/Meet)
     addListener(win, 'focus', () => this.reassert('focus'));
+    addListener(win, 'blur', () => this.reassert('blur'));
 
-    // 4. moved: fires once when a drag ends (e.g. onto another monitor).
-    //    The continuous 'move' event is deliberately NOT used: it fires dozens of times per second.
+    // 4. resize & resized: Window resized or display layout adjusted
+    addListener(win, 'resize', () => this.reassert('resize'));
+    addListener(win, 'resized', () => this.reassert('resized'));
+
+    // 5. moved & move: Drag ends or window moves across monitors/workspaces
     addListener(win, 'moved', () => this.reassert('moved'));
 
-    // 5. always-on-top changed
+    // 6. always-on-top changed, full-screen transitions
     addListener(win, 'always-on-top-changed', () => this.reassert('always-on-top-changed'));
+    addListener(win, 'enter-full-screen', () => this.reassert('enter-full-screen'));
+    addListener(win, 'leave-full-screen', () => this.reassert('leave-full-screen'));
 
-    // 6. Display changes (monitors plugged/unplugged, resolution change)
+    // 7. Display changes (monitors plugged/unplugged, resolution change)
     if (screen && typeof screen.on === 'function') {
       addListener(screen, 'display-metrics-changed', () => this.reassert('display-metrics-changed'));
       addListener(screen, 'display-added', () => this.reassert('display-added'));
+      addListener(screen, 'display-removed', () => this.reassert('display-removed'));
     }
 
     win.once('closed', () => {
@@ -189,6 +196,13 @@ export class WindowInvisibilityService {
         throw new Error('This Electron build does not expose setContentProtection.');
       }
       this.win.setContentProtection(enable);
+
+      // On macOS: ensure the window stays excluded across all virtual desktops / spaces
+      if (platform === 'darwin' && typeof this.win.setVisibleOnAllWorkspaces === 'function') {
+        try {
+          this.win.setVisibleOnAllWorkspaces(enable, { visibleOnFullScreen: true });
+        } catch {}
+      }
 
       this.lastAppliedAt = new Date().toISOString();
       this.lastError = undefined;
